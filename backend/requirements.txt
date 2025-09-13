@@ -1,5 +1,3 @@
 fastapi
 uvicorn
-gunicorn
 pydantic[email]
-email-validator
