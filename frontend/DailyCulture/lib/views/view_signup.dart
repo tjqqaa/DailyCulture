@@ -1,36 +1,48 @@
 import 'package:flutter/material.dart';
-import 'view_signup.dart'; //
 
-class LoginView extends StatefulWidget {
-  const LoginView({super.key});
+class SignUpView extends StatefulWidget {
+  const SignUpView({super.key});
 
   @override
-  State<LoginView> createState() => _LoginViewState();
+  State<SignUpView> createState() => _SignUpViewState();
 }
 
-class _LoginViewState extends State<LoginView> {
+class _SignUpViewState extends State<SignUpView> {
   final _formKey = GlobalKey<FormState>();
+
+  final _emailCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
+  final _fullNameCtrl = TextEditingController();
   final _passCtrl = TextEditingController();
-  bool _obscure = true;
+
+  bool _obscurePass = true;
   bool _loading = false;
 
   @override
   void dispose() {
+    _emailCtrl.dispose();
     _userCtrl.dispose();
+    _fullNameCtrl.dispose();
     _passCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _onLogin() async {
+  static const _usernameRegex = r'^[a-zA-Z0-9._-]{3,30}$';
+
+  Future<void> _onSignUp() async {
     if (!_formKey.currentState!.validate()) return;
+
     setState(() => _loading = true);
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await Future<void>.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
     setState(() => _loading = false);
+
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Hi ${_userCtrl.text.trim()}! (demo login)')),
+      SnackBar(content: Text('Welcome ${_userCtrl.text.trim()}! (demo sign up)')),
     );
+
+    // TODO: call your API here and then navigate accordingly
+    // Navigator.pop(context);
   }
 
   @override
@@ -56,15 +68,9 @@ class _LoginViewState extends State<LoginView> {
                         builder: (context, constraints) {
                           final w = constraints.maxWidth;
                           return Column(
-                            mainAxisSize: MainAxisSize.min,
                             children: [
-
-                              SizedBox(
-                                width: w,
-                                child: _LogoBannerFullWidth(width: w),
-                              ),
+                              SizedBox(width: w, child: _LogoBannerFullWidth(width: w)),
                               const SizedBox(height: 18),
-
                               SizedBox(
                                 width: w,
                                 child: Card(
@@ -82,22 +88,48 @@ class _LoginViewState extends State<LoginView> {
                                       child: Column(
                                         children: [
                                           _PrettyField(
+                                            controller: _emailCtrl,
+                                            label: 'Email',
+                                            icon: Icons.email_outlined,
+                                            textInputAction: TextInputAction.next,
+                                            validator: (v) {
+                                              final text = v?.trim() ?? '';
+                                              if (text.isEmpty) return 'Email is required';
+                                              final ok = RegExp(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+                                                  .hasMatch(text);
+                                              return ok ? null : 'Enter a valid email';
+                                            },
+                                          ),
+                                          const SizedBox(height: 12),
+                                          _PrettyField(
                                             controller: _userCtrl,
                                             label: 'Username',
                                             icon: Icons.person_outline,
                                             textInputAction: TextInputAction.next,
-                                            validator: (v) => (v == null || v.trim().length < 3)
-                                                ? 'Min. 3 characters'
-                                                : null,
+                                            validator: (v) {
+                                              final t = v?.trim() ?? '';
+                                              if (t.isEmpty) return 'Username is required';
+                                              return RegExp(_usernameRegex).hasMatch(t)
+                                                  ? null
+                                                  : '3–30 chars: letters, numbers, . _ -';
+                                            },
+                                          ),
+                                          const SizedBox(height: 12),
+                                          _PrettyField(
+                                            controller: _fullNameCtrl,
+                                            label: 'Full name (optional)',
+                                            icon: Icons.badge_outlined,
+                                            textInputAction: TextInputAction.next,
                                           ),
                                           const SizedBox(height: 12),
                                           _PrettyField(
                                             controller: _passCtrl,
                                             label: 'Password',
                                             icon: Icons.lock_outline,
-                                            obscure: _obscure,
+                                            obscure: _obscurePass,
                                             onToggleObscure: () =>
-                                                setState(() => _obscure = !_obscure),
+                                                setState(() => _obscurePass = !_obscurePass),
+                                            textInputAction: TextInputAction.done,
                                             validator: (v) =>
                                             (v == null || v.length < 8)
                                                 ? 'Min. 8 characters'
@@ -108,7 +140,7 @@ class _LoginViewState extends State<LoginView> {
                                             width: double.infinity,
                                             height: 52,
                                             child: ElevatedButton(
-                                              onPressed: _loading ? null : _onLogin,
+                                              onPressed: _loading ? null : _onSignUp,
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: primary,
                                                 foregroundColor: Colors.white,
@@ -119,15 +151,15 @@ class _LoginViewState extends State<LoginView> {
                                               ),
                                               child: _loading
                                                   ? const SizedBox(
-                                                height: 22,
                                                 width: 22,
+                                                height: 22,
                                                 child: CircularProgressIndicator(
                                                   strokeWidth: 2,
                                                   color: Colors.white,
                                                 ),
                                               )
                                                   : const Text(
-                                                'Log in',
+                                                'Create account',
                                                 style: TextStyle(
                                                   fontWeight: FontWeight.w700,
                                                   letterSpacing: .2,
@@ -145,18 +177,11 @@ class _LoginViewState extends State<LoginView> {
                           );
                         },
                       ),
-
                       const SizedBox(height: 14),
                       TextButton(
-                        onPressed: () {
-                          Navigator.push(
-                            context,
-                            MaterialPageRoute(builder: (_) => const SignUpView()),
-                          );
-                        },
-                        child: const Text("Don't have an account?  Create one"),
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Already have an account?  Log in'),
                       ),
-
                       const SizedBox(height: 12),
                     ],
                   ),
@@ -170,6 +195,8 @@ class _LoginViewState extends State<LoginView> {
   }
 }
 
+// --- decorative pieces (same as Login) ---
+
 class _LogoBannerFullWidth extends StatelessWidget {
   const _LogoBannerFullWidth({required this.width});
   final double width;
@@ -177,7 +204,6 @@ class _LogoBannerFullWidth extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final logoHeight = (width * 0.22).clamp(56.0, 110.0);
-
     return Container(
       width: width,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
