@@ -1,6 +1,9 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'view_home.dart';
 
 class SignUpView extends StatefulWidget {
   const SignUpView({super.key});
@@ -15,16 +18,19 @@ class _SignUpViewState extends State<SignUpView> {
   final _emailCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _fullNameCtrl = TextEditingController();
-  final _passCtrl = TextEditingController(); // (solo UI; tu API no guarda contraseñas)
+  final _passCtrl = TextEditingController(); // backend hashea
 
   bool _obscurePass = true;
   bool _loading = false;
 
-  // Cambia el host si usas otro.
-  static const String _baseUrl =
-  String.fromEnvironment('API_BASE_URL',
-      defaultValue:
-      'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net');
+  final _storage = const FlutterSecureStorage();
+
+  // Puedes sobreescribirla con --dart-define=API_BASE_URL=...
+  static const String _baseUrl = String.fromEnvironment(
+    'API_BASE_URL',
+    defaultValue:
+    'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net',
+  );
 
   @override
   void dispose() {
@@ -42,49 +48,92 @@ class _SignUpViewState extends State<SignUpView> {
 
     setState(() => _loading = true);
     try {
-      final uri = Uri.parse('$_baseUrl/users');
-      final body = jsonEncode({
+      // 1) Crear usuario
+      final createUri = Uri.parse('$_baseUrl/users');
+      final createBody = jsonEncode({
         'email': _emailCtrl.text.trim(),
         'username': _userCtrl.text.trim(),
         if (_fullNameCtrl.text.trim().isNotEmpty)
           'full_name': _fullNameCtrl.text.trim(),
         'is_active': true,
+        'password': _passCtrl.text,
       });
 
       final res = await http
           .post(
-        uri,
+        createUri,
         headers: const {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: body,
+        body: createBody,
       )
           .timeout(const Duration(seconds: 20));
 
-      if (res.statusCode == 201) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Account created! Welcome ${data['username']}')),
-        );
-        Navigator.pop(context); // volver a Login
-        return;
+      if (res.statusCode != 201) {
+        String msg;
+        try {
+          final m = jsonDecode(res.body) as Map<String, dynamic>;
+          msg = (m['detail']?.toString()) ?? res.reasonPhrase ?? 'Unknown error';
+        } catch (_) {
+          msg = res.reasonPhrase ?? 'Unknown error';
+        }
+        throw Exception('HTTP ${res.statusCode}: $msg');
       }
 
-      // Extraer mensaje de error de FastAPI
-      String msg;
-      try {
-        final m = jsonDecode(res.body) as Map<String, dynamic>;
-        msg = (m['detail']?.toString()) ?? res.reasonPhrase ?? 'Unknown error';
-      } catch (_) {
-        msg = res.reasonPhrase ?? 'Unknown error';
+      // 2) Login automático para obtener token
+      final loginUri = Uri.parse('$_baseUrl/auth/login');
+      final loginRes = await http.post(
+        loginUri,
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({
+          'username': _userCtrl.text.trim(), // tu API acepta username o email
+          'password': _passCtrl.text,
+        }),
+      );
+
+      if (loginRes.statusCode != 200) {
+        String msg = 'No se pudo iniciar sesión tras el registro';
+        try {
+          final m = jsonDecode(loginRes.body) as Map<String, dynamic>;
+          if (m['detail'] != null) msg = m['detail'].toString();
+        } catch (_) {}
+        throw Exception(msg);
       }
-      throw Exception('HTTP ${res.statusCode}: $msg');
+
+      final loginData = jsonDecode(loginRes.body) as Map<String, dynamic>;
+      final token = loginData['access_token'] as String?;
+      final user = (loginData['user'] ?? {}) as Map<String, dynamic>;
+      final username = (user['username'] ?? '') as String;
+
+      if (token == null) {
+        throw Exception('Respuesta de login sin access_token');
+      }
+
+      await _storage.write(key: 'access_token', value: token);
+
+      if (!mounted) return;
+      // 3) Navegar a HomeView
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => HomeView(
+            username: username,
+            onSignOut: () async {
+              await _storage.delete(key: 'access_token');
+              if (context.mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+            },
+          ),
+        ),
+            (_) => false,
+      );
     } catch (e) {
       if (!mounted) return;
-      final text = e.toString().replaceFirst('Exception: ', '');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString().replaceFirst('Exception: ', ''))),
+      );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -103,8 +152,7 @@ class _SignUpViewState extends State<SignUpView> {
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 420),
                   child: Column(
@@ -115,9 +163,7 @@ class _SignUpViewState extends State<SignUpView> {
                           final w = constraints.maxWidth;
                           return Column(
                             children: [
-                              SizedBox(
-                                  width: w,
-                                  child: _LogoBannerFullWidth(width: w)),
+                              SizedBox(width: w, child: _LogoBannerFullWidth(width: w)),
                               const SizedBox(height: 18),
                               SizedBox(
                                 width: w,
@@ -127,12 +173,10 @@ class _SignUpViewState extends State<SignUpView> {
                                   color: Colors.white,
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(20),
-                                    side: const BorderSide(
-                                        color: Color(0xFFF0ECE4)),
+                                    side: const BorderSide(color: Color(0xFFF0ECE4)),
                                   ),
                                   child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                        18, 20, 18, 18),
+                                    padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
                                     child: Form(
                                       key: _formKey,
                                       child: Column(
@@ -141,19 +185,12 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _emailCtrl,
                                             label: 'Email',
                                             icon: Icons.email_outlined,
-                                            textInputAction:
-                                            TextInputAction.next,
+                                            textInputAction: TextInputAction.next,
                                             validator: (v) {
                                               final text = v?.trim() ?? '';
-                                              if (text.isEmpty) {
-                                                return 'Email is required';
-                                              }
-                                              final ok = RegExp(
-                                                  r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
-                                                  .hasMatch(text);
-                                              return ok
-                                                  ? null
-                                                  : 'Enter a valid email';
+                                              if (text.isEmpty) return 'Email is required';
+                                              final ok = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(text);
+                                              return ok ? null : 'Enter a valid email';
                                             },
                                           ),
                                           const SizedBox(height: 12),
@@ -161,15 +198,11 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _userCtrl,
                                             label: 'Username',
                                             icon: Icons.person_outline,
-                                            textInputAction:
-                                            TextInputAction.next,
+                                            textInputAction: TextInputAction.next,
                                             validator: (v) {
                                               final t = v?.trim() ?? '';
-                                              if (t.isEmpty) {
-                                                return 'Username is required';
-                                              }
-                                              return RegExp(_usernameRegex)
-                                                  .hasMatch(t)
+                                              if (t.isEmpty) return 'Username is required';
+                                              return RegExp(_usernameRegex).hasMatch(t)
                                                   ? null
                                                   : '3–30 chars: letters, numbers, . _ -';
                                             },
@@ -179,8 +212,7 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _fullNameCtrl,
                                             label: 'Full name (optional)',
                                             icon: Icons.badge_outlined,
-                                            textInputAction:
-                                            TextInputAction.next,
+                                            textInputAction: TextInputAction.next,
                                           ),
                                           const SizedBox(height: 12),
                                           _PrettyField(
@@ -188,40 +220,31 @@ class _SignUpViewState extends State<SignUpView> {
                                             label: 'Password',
                                             icon: Icons.lock_outline,
                                             obscure: _obscurePass,
-                                            onToggleObscure: () => setState(
-                                                    () => _obscurePass =
-                                                !_obscurePass),
-                                            textInputAction:
-                                            TextInputAction.done,
-                                            // Tu API no guarda contraseñas, esto es solo validación visual
-                                            validator: (v) => (v == null ||
-                                                v.length < 8)
-                                                ? 'Min. 8 characters'
-                                                : null,
+                                            onToggleObscure: () =>
+                                                setState(() => _obscurePass = !_obscurePass),
+                                            textInputAction: TextInputAction.done,
+                                            validator: (v) =>
+                                            (v == null || v.length < 8) ? 'Min. 8 characters' : null,
                                           ),
                                           const SizedBox(height: 18),
                                           SizedBox(
                                             width: double.infinity,
                                             height: 52,
                                             child: ElevatedButton(
-                                              onPressed:
-                                              _loading ? null : _onSignUp,
+                                              onPressed: _loading ? null : _onSignUp,
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: primary,
                                                 foregroundColor: Colors.white,
                                                 elevation: 2,
-                                                shape:
-                                                RoundedRectangleBorder(
-                                                  borderRadius:
-                                                  BorderRadius.circular(14),
+                                                shape: RoundedRectangleBorder(
+                                                  borderRadius: BorderRadius.circular(14),
                                                 ),
                                               ),
                                               child: _loading
                                                   ? const SizedBox(
                                                 width: 22,
                                                 height: 22,
-                                                child:
-                                                CircularProgressIndicator(
+                                                child: CircularProgressIndicator(
                                                   strokeWidth: 2,
                                                   color: Colors.white,
                                                 ),
@@ -229,8 +252,7 @@ class _SignUpViewState extends State<SignUpView> {
                                                   : const Text(
                                                 'Create account',
                                                 style: TextStyle(
-                                                  fontWeight:
-                                                  FontWeight.w700,
+                                                  fontWeight: FontWeight.w700,
                                                   letterSpacing: .2,
                                                 ),
                                               ),
@@ -249,8 +271,7 @@ class _SignUpViewState extends State<SignUpView> {
                       const SizedBox(height: 14),
                       TextButton(
                         onPressed: () => Navigator.pop(context),
-                        child: const Text(
-                            'Already have an account?  Log in'),
+                        child: const Text('Already have an account?  Log in'),
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -265,8 +286,7 @@ class _SignUpViewState extends State<SignUpView> {
   }
 }
 
-// ---- UI helpers (igual que tu Login) ----
-
+// ---- UI helpers (igual que antes)
 class _LogoBannerFullWidth extends StatelessWidget {
   const _LogoBannerFullWidth({required this.width});
   final double width;
@@ -281,13 +301,7 @@ class _LogoBannerFullWidth extends StatelessWidget {
         color: Colors.white.withOpacity(.95),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: const Color(0xFFF0ECE4)),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x16000000),
-            blurRadius: 18,
-            offset: Offset(0, 8),
-          ),
-        ],
+        boxShadow: const [BoxShadow(color: Color(0x16000000), blurRadius: 18, offset: Offset(0, 8))],
       ),
       child: Center(
         child: Image.asset(
@@ -338,11 +352,8 @@ class _PrettyField extends StatelessWidget {
         ),
         filled: true,
         fillColor: Colors.white,
-        contentPadding:
-        const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(14),
-        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
         enabledBorder: const OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(14)),
           borderSide: BorderSide(color: Color(0xFFEAE7E0)),
@@ -372,16 +383,8 @@ class _DecorBackground extends StatelessWidget {
             ),
           ),
         ),
-        Positioned(
-          top: -60,
-          left: -40,
-          child: _blob(const Color(0xFF7C75F0).withOpacity(.25), 180),
-        ),
-        Positioned(
-          bottom: -40,
-          right: -30,
-          child: _blob(const Color(0xFF5B53D6).withOpacity(.22), 160),
-        ),
+        Positioned(top: -60, left: -40, child: _blob(const Color(0xFF7C75F0).withOpacity(.25), 180)),
+        Positioned(bottom: -40, right: -30, child: _blob(const Color(0xFF5B53D6).withOpacity(.22), 160)),
       ],
     );
   }
@@ -393,9 +396,7 @@ class _DecorBackground extends StatelessWidget {
       decoration: BoxDecoration(
         color: color,
         shape: BoxShape.circle,
-        boxShadow: [
-          BoxShadow(color: color, blurRadius: 80, spreadRadius: 30),
-        ],
+        boxShadow: [BoxShadow(color: color, blurRadius: 80, spreadRadius: 30)],
       ),
     );
   }
