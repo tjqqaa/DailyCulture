@@ -1,6 +1,6 @@
 import os
 from uuid import uuid4
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Depends, Query
@@ -15,12 +15,14 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sess
 
 from dotenv import load_dotenv
 
-load_dotenv()  
+# NEW: auth helpers
+from passlib.context import CryptContext
+from jose import jwt, JWTError
+
+load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
-
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-
 
 engine = create_engine(
     DATABASE_URL,
@@ -32,10 +34,8 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(engine, expire_on_commit=False, autoflush=False)
 
-
 class Base(DeclarativeBase):
     pass
-
 
 class UserORM(Base):
     __tablename__ = "users"
@@ -49,12 +49,13 @@ class UserORM(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-
+    # NEW: hash de contraseña
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
 Base.metadata.create_all(engine)
 
+# ---------- Pydantic models ----------
 username_regex = r"^[a-zA-Z0-9._-]{3,30}$"
-
 
 class UserBase(BaseModel):
     email: EmailStr
@@ -62,10 +63,8 @@ class UserBase(BaseModel):
     full_name: Optional[str] = None
     is_active: bool = True
 
-
 class UserCreate(UserBase):
-    pass
-
+    password: str = Field(..., min_length=8)  # NEW
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
@@ -73,25 +72,53 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     is_active: Optional[bool] = None
 
-
-class User(UserBase):
+class User(BaseModel):
     id: str
+    email: EmailStr
+    username: str
+    full_name: Optional[str] = None
+    is_active: bool
     created_at: datetime
 
     class Config:
-        from_attributes = True  
+        from_attributes = True
 
+# Login payload/response
+class LoginPayload(BaseModel):
+    username: str  # puede ser username o email
+    password: str
 
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: User
+
+# ---------- Auth utils ----------
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE-ME")  # pon un valor seguro en Azure
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MIN = 60 * 24 * 7  # 7 días
+
+def hash_password(pw: str) -> str:
+    return pwd_context.hash(pw)
+
+def verify_password(pw: str, pw_hash: str) -> bool:
+    return pwd_context.verify(pw, pw_hash)
+
+def create_access_token(sub: str) -> str:
+    payload = {"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MIN)}
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+# ---------- FastAPI ----------
 app = FastAPI(title="DailyCulture API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,
 )
-
 
 def get_db():
     db = SessionLocal()
@@ -100,13 +127,9 @@ def get_db():
     finally:
         db.close()
 
-
 @app.get("/")
 def root():
     return {"service": "dailyculture", "docs": "/docs"}
-
-
-
 
 def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[str] = None):
     q = select(UserORM).where(or_(UserORM.email.ilike(email), UserORM.username.ilike(username)))
@@ -118,7 +141,7 @@ def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[
         if u.username.lower() == username.lower():
             raise HTTPException(status_code=409, detail="Username ya está en uso")
 
-
+# -------- Users CRUD --------
 @app.get("/users", response_model=List[User])
 def list_users(
     q: Optional[str] = Query(None),
@@ -139,7 +162,6 @@ def list_users(
     users = db.scalars(stmt.offset(offset).limit(limit)).all()
     return [User.model_validate(u) for u in users]
 
-
 @app.get("/users/{user_id}", response_model=User)
 def get_user(user_id: str, db: Session = Depends(get_db)):
     u = db.get(UserORM, user_id)
@@ -147,16 +169,20 @@ def get_user(user_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return User.model_validate(u)
 
-
 @app.post("/users", status_code=201, response_model=User)
 def create_user(data: UserCreate, db: Session = Depends(get_db)):
     _ensure_unique(db, data.email, data.username)
-    u = UserORM(**data.model_dump())
+    u = UserORM(
+        email=data.email,
+        username=data.username,
+        full_name=data.full_name,
+        is_active=data.is_active,
+        password_hash=hash_password(data.password),  # NEW
+    )
     db.add(u)
     db.commit()
     db.refresh(u)
     return User.model_validate(u)
-
 
 @app.put("/users/{user_id}", response_model=User)
 def replace_user(user_id: str, data: UserCreate, db: Session = Depends(get_db)):
@@ -169,11 +195,11 @@ def replace_user(user_id: str, data: UserCreate, db: Session = Depends(get_db)):
     u.username = data.username
     u.full_name = data.full_name
     u.is_active = data.is_active
+    u.password_hash = hash_password(data.password)  # si quieres reemplazarla con PUT
 
     db.commit()
     db.refresh(u)
     return User.model_validate(u)
-
 
 @app.patch("/users/{user_id}", response_model=User)
 def update_user(user_id: str, data: UserUpdate, db: Session = Depends(get_db)):
@@ -196,7 +222,6 @@ def update_user(user_id: str, data: UserUpdate, db: Session = Depends(get_db)):
     db.refresh(u)
     return User.model_validate(u)
 
-
 @app.delete("/users/{user_id}", status_code=204)
 def delete_user(user_id: str, db: Session = Depends(get_db)):
     u = db.get(UserORM, user_id)
@@ -206,6 +231,19 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
     db.commit()
     return None
 
+# -------- Auth --------
+@app.post("/auth/login", response_model=TokenResponse)
+def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
+    name = payload.username.strip().lower()
+    stmt = select(UserORM).where(
+        or_(func.lower(UserORM.username) == name, func.lower(UserORM.email) == name)
+    )
+    user = db.scalars(stmt).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Credenciales inválidas")
+
+    token = create_access_token(user.id)
+    return TokenResponse(access_token=token, user=User.model_validate(user))
 
 # --- Ejecución local ---
 if __name__ == "__main__":
