@@ -12,18 +12,20 @@ from sqlalchemy import (
     func, or_, UniqueConstraint
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sessionmaker
+from sqlalchemy.exc import IntegrityError
 
 from dotenv import load_dotenv
 
-# NEW: auth helpers
+# Auth helpers
 from passlib.context import CryptContext
-from jose import jwt, JWTError
+from jose import jwt
 
+# --- carga env
 load_dotenv()
 
+# --- DB
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./local.db")
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-
 engine = create_engine(
     DATABASE_URL,
     echo=False,
@@ -40,21 +42,18 @@ class Base(DeclarativeBase):
 class UserORM(Base):
     __tablename__ = "users"
     __table_args__ = (UniqueConstraint("email"), UniqueConstraint("username"))
-
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     username: Mapped[str] = mapped_column(String(30), nullable=False)
     full_name: Mapped[Optional[str]] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    # NEW: hash de contraseña
-    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Permite NULL para filas antiguas; para nuevas siempre se rellena
+    password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
 Base.metadata.create_all(engine)
 
-# ---------- Pydantic models ----------
+# ---------- Pydantic ----------
 username_regex = r"^[a-zA-Z0-9._-]{3,30}$"
 
 class UserBase(BaseModel):
@@ -64,7 +63,7 @@ class UserBase(BaseModel):
     is_active: bool = True
 
 class UserCreate(UserBase):
-    password: str = Field(..., min_length=8)  # NEW
+    password: str = Field(..., min_length=8)
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
@@ -79,13 +78,11 @@ class User(BaseModel):
     full_name: Optional[str] = None
     is_active: bool
     created_at: datetime
-
     class Config:
         from_attributes = True
 
-# Login payload/response
 class LoginPayload(BaseModel):
-    username: str  # puede ser username o email
+    username: str
     password: str
 
 class TokenResponse(BaseModel):
@@ -95,15 +92,24 @@ class TokenResponse(BaseModel):
 
 # ---------- Auth utils ----------
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE-ME")  # pon un valor seguro en Azure
+SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE-ME")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MIN = 60 * 24 * 7  # 7 días
 
 def hash_password(pw: str) -> str:
-    return pwd_context.hash(pw)
+    try:
+        return pwd_context.hash(pw)
+    except Exception as e:
+        # Log y error claro si falta backend de bcrypt
+        print("Password hashing failed:", repr(e))
+        raise HTTPException(status_code=500, detail="Password hashing failed (bcrypt backend missing).")
 
 def verify_password(pw: str, pw_hash: str) -> bool:
-    return pwd_context.verify(pw, pw_hash)
+    try:
+        return pwd_context.verify(pw, pw_hash)
+    except Exception as e:
+        print("Password verify failed:", repr(e))
+        return False
 
 def create_access_token(sub: str) -> str:
     payload = {"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MIN)}
@@ -131,8 +137,25 @@ def get_db():
 def root():
     return {"service": "dailyculture", "docs": "/docs"}
 
+# Health checks útiles en Azure
+@app.get("/health")
+def health():
+    import sys
+    try:
+        import bcrypt  # type: ignore
+        bcrypt_ver = getattr(bcrypt, "__version__", "unknown")
+    except Exception as e:
+        bcrypt_ver = f"ERROR: {e!r}"
+    return {
+        "python": sys.version,
+        "db_url_scheme": DATABASE_URL.split("://", 1)[0],
+        "bcrypt": bcrypt_ver,
+        "passlib_has_bcrypt": "bcrypt" in pwd_context.schemes(),
+    }
+
 def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[str] = None):
-    q = select(UserORM).where(or_(UserORM.email.ilike(email), UserORM.username.ilike(username)))
+    q = select(UserORM).where(or_(func.lower(UserORM.email) == email.lower(),
+                                  func.lower(UserORM.username) == username.lower()))
     for u in db.scalars(q).all():
         if exclude_id and u.id == exclude_id:
             continue
@@ -143,12 +166,7 @@ def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[
 
 # -------- Users CRUD --------
 @app.get("/users", response_model=List[User])
-def list_users(
-    q: Optional[str] = Query(None),
-    limit: int = 50,
-    offset: int = 0,
-    db: Session = Depends(get_db),
-):
+def list_users(q: Optional[str] = Query(None), limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     stmt = select(UserORM).order_by(UserORM.created_at.desc())
     if q:
         like = f"%{q.lower()}%"
@@ -159,8 +177,7 @@ def list_users(
                 func.lower(func.coalesce(UserORM.full_name, "")).like(like),
             )
         )
-    users = db.scalars(stmt.offset(offset).limit(limit)).all()
-    return [User.model_validate(u) for u in users]
+    return [User.model_validate(u) for u in db.scalars(stmt.offset(offset).limit(limit)).all()]
 
 @app.get("/users/{user_id}", response_model=User)
 def get_user(user_id: str, db: Session = Depends(get_db)):
@@ -172,17 +189,21 @@ def get_user(user_id: str, db: Session = Depends(get_db)):
 @app.post("/users", status_code=201, response_model=User)
 def create_user(data: UserCreate, db: Session = Depends(get_db)):
     _ensure_unique(db, data.email, data.username)
-    u = UserORM(
-        email=data.email,
-        username=data.username,
-        full_name=data.full_name,
-        is_active=data.is_active,
-        password_hash=hash_password(data.password),  # NEW
-    )
-    db.add(u)
-    db.commit()
-    db.refresh(u)
-    return User.model_validate(u)
+    try:
+        u = UserORM(
+            email=data.email,
+            username=data.username,
+            full_name=data.full_name,
+            is_active=data.is_active,
+            password_hash=hash_password(data.password),
+        )
+        db.add(u)
+        db.commit()
+        db.refresh(u)
+        return User.model_validate(u)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Email o username ya existen (unique).")
 
 @app.put("/users/{user_id}", response_model=User)
 def replace_user(user_id: str, data: UserCreate, db: Session = Depends(get_db)):
@@ -190,25 +211,25 @@ def replace_user(user_id: str, data: UserCreate, db: Session = Depends(get_db)):
     if not u:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     _ensure_unique(db, data.email, data.username, exclude_id=user_id)
-
-    u.email = data.email
-    u.username = data.username
-    u.full_name = data.full_name
-    u.is_active = data.is_active
-    u.password_hash = hash_password(data.password)  # si quieres reemplazarla con PUT
-
-    db.commit()
-    db.refresh(u)
-    return User.model_validate(u)
+    try:
+        u.email = data.email
+        u.username = data.username
+        u.full_name = data.full_name
+        u.is_active = data.is_active
+        u.password_hash = hash_password(data.password)
+        db.commit()
+        db.refresh(u)
+        return User.model_validate(u)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Email o username ya existen (unique).")
 
 @app.patch("/users/{user_id}", response_model=User)
 def update_user(user_id: str, data: UserUpdate, db: Session = Depends(get_db)):
     u = db.get(UserORM, user_id)
     if not u:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-
     _ensure_unique(db, data.email or u.email, data.username or u.username, exclude_id=user_id)
-
     if data.email is not None:
         u.email = data.email
     if data.username is not None:
@@ -217,7 +238,6 @@ def update_user(user_id: str, data: UserUpdate, db: Session = Depends(get_db)):
         u.full_name = data.full_name
     if data.is_active is not None:
         u.is_active = data.is_active
-
     db.commit()
     db.refresh(u)
     return User.model_validate(u)
@@ -235,17 +255,9 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
 @app.post("/auth/login", response_model=TokenResponse)
 def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
     name = payload.username.strip().lower()
-    stmt = select(UserORM).where(
-        or_(func.lower(UserORM.username) == name, func.lower(UserORM.email) == name)
-    )
+    stmt = select(UserORM).where(or_(func.lower(UserORM.username) == name, func.lower(UserORM.email) == name))
     user = db.scalars(stmt).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    if not user or not user.password_hash or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
-
     token = create_access_token(user.id)
     return TokenResponse(access_token=token, user=User.model_validate(user))
-
-# --- Ejecución local ---
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
