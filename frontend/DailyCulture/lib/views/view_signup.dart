@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
 
 class SignUpView extends StatefulWidget {
   const SignUpView({super.key});
@@ -13,10 +15,16 @@ class _SignUpViewState extends State<SignUpView> {
   final _emailCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _fullNameCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
+  final _passCtrl = TextEditingController(); // (solo UI; tu API no guarda contraseñas)
 
   bool _obscurePass = true;
   bool _loading = false;
+
+  // Cambia el host si usas otro.
+  static const String _baseUrl =
+  String.fromEnvironment('API_BASE_URL',
+      defaultValue:
+      'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net');
 
   @override
   void dispose() {
@@ -33,16 +41,53 @@ class _SignUpViewState extends State<SignUpView> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _loading = true);
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-    if (!mounted) return;
-    setState(() => _loading = false);
+    try {
+      final uri = Uri.parse('$_baseUrl/users');
+      final body = jsonEncode({
+        'email': _emailCtrl.text.trim(),
+        'username': _userCtrl.text.trim(),
+        if (_fullNameCtrl.text.trim().isNotEmpty)
+          'full_name': _fullNameCtrl.text.trim(),
+        'is_active': true,
+      });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Welcome ${_userCtrl.text.trim()}! (demo sign up)')),
-    );
+      final res = await http
+          .post(
+        uri,
+        headers: const {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: body,
+      )
+          .timeout(const Duration(seconds: 20));
 
-    // TODO: call your API here and then navigate accordingly
-    // Navigator.pop(context);
+      if (res.statusCode == 201) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Account created! Welcome ${data['username']}')),
+        );
+        Navigator.pop(context); // volver a Login
+        return;
+      }
+
+      // Extraer mensaje de error de FastAPI
+      String msg;
+      try {
+        final m = jsonDecode(res.body) as Map<String, dynamic>;
+        msg = (m['detail']?.toString()) ?? res.reasonPhrase ?? 'Unknown error';
+      } catch (_) {
+        msg = res.reasonPhrase ?? 'Unknown error';
+      }
+      throw Exception('HTTP ${res.statusCode}: $msg');
+    } catch (e) {
+      if (!mounted) return;
+      final text = e.toString().replaceFirst('Exception: ', '');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   @override
@@ -58,7 +103,8 @@ class _SignUpViewState extends State<SignUpView> {
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 420),
                   child: Column(
@@ -69,7 +115,9 @@ class _SignUpViewState extends State<SignUpView> {
                           final w = constraints.maxWidth;
                           return Column(
                             children: [
-                              SizedBox(width: w, child: _LogoBannerFullWidth(width: w)),
+                              SizedBox(
+                                  width: w,
+                                  child: _LogoBannerFullWidth(width: w)),
                               const SizedBox(height: 18),
                               SizedBox(
                                 width: w,
@@ -79,10 +127,12 @@ class _SignUpViewState extends State<SignUpView> {
                                   color: Colors.white,
                                   shape: RoundedRectangleBorder(
                                     borderRadius: BorderRadius.circular(20),
-                                    side: const BorderSide(color: Color(0xFFF0ECE4)),
+                                    side: const BorderSide(
+                                        color: Color(0xFFF0ECE4)),
                                   ),
                                   child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
+                                    padding: const EdgeInsets.fromLTRB(
+                                        18, 20, 18, 18),
                                     child: Form(
                                       key: _formKey,
                                       child: Column(
@@ -91,13 +141,19 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _emailCtrl,
                                             label: 'Email',
                                             icon: Icons.email_outlined,
-                                            textInputAction: TextInputAction.next,
+                                            textInputAction:
+                                            TextInputAction.next,
                                             validator: (v) {
                                               final text = v?.trim() ?? '';
-                                              if (text.isEmpty) return 'Email is required';
-                                              final ok = RegExp(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+                                              if (text.isEmpty) {
+                                                return 'Email is required';
+                                              }
+                                              final ok = RegExp(
+                                                  r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
                                                   .hasMatch(text);
-                                              return ok ? null : 'Enter a valid email';
+                                              return ok
+                                                  ? null
+                                                  : 'Enter a valid email';
                                             },
                                           ),
                                           const SizedBox(height: 12),
@@ -105,11 +161,15 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _userCtrl,
                                             label: 'Username',
                                             icon: Icons.person_outline,
-                                            textInputAction: TextInputAction.next,
+                                            textInputAction:
+                                            TextInputAction.next,
                                             validator: (v) {
                                               final t = v?.trim() ?? '';
-                                              if (t.isEmpty) return 'Username is required';
-                                              return RegExp(_usernameRegex).hasMatch(t)
+                                              if (t.isEmpty) {
+                                                return 'Username is required';
+                                              }
+                                              return RegExp(_usernameRegex)
+                                                  .hasMatch(t)
                                                   ? null
                                                   : '3–30 chars: letters, numbers, . _ -';
                                             },
@@ -119,7 +179,8 @@ class _SignUpViewState extends State<SignUpView> {
                                             controller: _fullNameCtrl,
                                             label: 'Full name (optional)',
                                             icon: Icons.badge_outlined,
-                                            textInputAction: TextInputAction.next,
+                                            textInputAction:
+                                            TextInputAction.next,
                                           ),
                                           const SizedBox(height: 12),
                                           _PrettyField(
@@ -127,11 +188,14 @@ class _SignUpViewState extends State<SignUpView> {
                                             label: 'Password',
                                             icon: Icons.lock_outline,
                                             obscure: _obscurePass,
-                                            onToggleObscure: () =>
-                                                setState(() => _obscurePass = !_obscurePass),
-                                            textInputAction: TextInputAction.done,
-                                            validator: (v) =>
-                                            (v == null || v.length < 8)
+                                            onToggleObscure: () => setState(
+                                                    () => _obscurePass =
+                                                !_obscurePass),
+                                            textInputAction:
+                                            TextInputAction.done,
+                                            // Tu API no guarda contraseñas, esto es solo validación visual
+                                            validator: (v) => (v == null ||
+                                                v.length < 8)
                                                 ? 'Min. 8 characters'
                                                 : null,
                                           ),
@@ -140,20 +204,24 @@ class _SignUpViewState extends State<SignUpView> {
                                             width: double.infinity,
                                             height: 52,
                                             child: ElevatedButton(
-                                              onPressed: _loading ? null : _onSignUp,
+                                              onPressed:
+                                              _loading ? null : _onSignUp,
                                               style: ElevatedButton.styleFrom(
                                                 backgroundColor: primary,
                                                 foregroundColor: Colors.white,
                                                 elevation: 2,
-                                                shape: RoundedRectangleBorder(
-                                                  borderRadius: BorderRadius.circular(14),
+                                                shape:
+                                                RoundedRectangleBorder(
+                                                  borderRadius:
+                                                  BorderRadius.circular(14),
                                                 ),
                                               ),
                                               child: _loading
                                                   ? const SizedBox(
                                                 width: 22,
                                                 height: 22,
-                                                child: CircularProgressIndicator(
+                                                child:
+                                                CircularProgressIndicator(
                                                   strokeWidth: 2,
                                                   color: Colors.white,
                                                 ),
@@ -161,7 +229,8 @@ class _SignUpViewState extends State<SignUpView> {
                                                   : const Text(
                                                 'Create account',
                                                 style: TextStyle(
-                                                  fontWeight: FontWeight.w700,
+                                                  fontWeight:
+                                                  FontWeight.w700,
                                                   letterSpacing: .2,
                                                 ),
                                               ),
@@ -180,7 +249,8 @@ class _SignUpViewState extends State<SignUpView> {
                       const SizedBox(height: 14),
                       TextButton(
                         onPressed: () => Navigator.pop(context),
-                        child: const Text('Already have an account?  Log in'),
+                        child: const Text(
+                            'Already have an account?  Log in'),
                       ),
                       const SizedBox(height: 12),
                     ],
@@ -195,7 +265,7 @@ class _SignUpViewState extends State<SignUpView> {
   }
 }
 
-// --- decorative pieces (same as Login) ---
+// ---- UI helpers (igual que tu Login) ----
 
 class _LogoBannerFullWidth extends StatelessWidget {
   const _LogoBannerFullWidth({required this.width});
@@ -268,7 +338,8 @@ class _PrettyField extends StatelessWidget {
         ),
         filled: true,
         fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        contentPadding:
+        const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
         ),
@@ -323,11 +394,7 @@ class _DecorBackground extends StatelessWidget {
         color: color,
         shape: BoxShape.circle,
         boxShadow: [
-          BoxShadow(
-            color: color,
-            blurRadius: 80,
-            spreadRadius: 30,
-          ),
+          BoxShadow(color: color, blurRadius: 80, spreadRadius: 30),
         ],
       ),
     );
