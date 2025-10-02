@@ -56,22 +56,40 @@ class _LoginViewState extends State<LoginView> {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final token = data['access_token'] as String?;
         final user = (data['user'] ?? {}) as Map<String, dynamic>;
-        final username = (user['username'] ?? '') as String;
+
+        // username para el saludo en Home
+        final username = (user['username'] ?? user['name'] ?? '').toString();
 
         if (token == null || token.isEmpty) {
           throw Exception('Respuesta sin access_token');
         }
 
-        // guarda el token para futuras llamadas
+        // 1) Guarda token
         await _storage.write(key: 'access_token', value: token);
 
+        // 2) Normaliza y guarda el usuario en cache para ProfileView
+        final normalizedUser = {
+          'id':       (user['id'] ?? user['_id'] ?? user['uid'] ?? user['sub'] ?? '—').toString(),
+          'email':    (user['email'] ?? '').toString(),
+          'username': (user['username'] ?? user['name'] ?? _userCtrl.text.trim()).toString(),
+          'full_name': user['full_name'] ?? user['fullName'] ?? user['name'],
+          'is_active': (user['is_active'] ?? user['isActive'] ?? true) == true,
+          'created_at': (user['created_at'] ??
+              user['createdAt'] ??
+              DateTime.now().toIso8601String()),
+        };
+        try {
+          await _storage.write(key: 'user_cache', value: jsonEncode(normalizedUser));
+        } catch (_) {
+          // ignoramos si no se puede serializar
+        }
+
         if (!mounted) return;
-        // navega a HomeView (HomeView manejará el logout)
+        // 3) Navega a HomeView
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => HomeView(
               username: username,
-              // ya NO pasamos onSignOut desde aquí
             ),
           ),
         );
