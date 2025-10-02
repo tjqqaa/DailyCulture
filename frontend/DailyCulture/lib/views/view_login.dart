@@ -1,3 +1,4 @@
+// lib/views/view_login.dart
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -57,7 +58,7 @@ class _LoginViewState extends State<LoginView> {
         final user = (data['user'] ?? {}) as Map<String, dynamic>;
         final username = (user['username'] ?? '') as String;
 
-        if (token == null) {
+        if (token == null || token.isEmpty) {
           throw Exception('Respuesta sin access_token');
         }
 
@@ -65,20 +66,12 @@ class _LoginViewState extends State<LoginView> {
         await _storage.write(key: 'access_token', value: token);
 
         if (!mounted) return;
-        // navega a HomeView
+        // navega a HomeView (HomeView manejará el logout)
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
             builder: (_) => HomeView(
               username: username,
-              onSignOut: () async {
-                await _storage.delete(key: 'access_token');
-                if (context.mounted) {
-                  Navigator.of(context).pushAndRemoveUntil(
-                    MaterialPageRoute(builder: (_) => const LoginView()),
-                        (_) => false,
-                  );
-                }
-              },
+              // ya NO pasamos onSignOut desde aquí
             ),
           ),
         );

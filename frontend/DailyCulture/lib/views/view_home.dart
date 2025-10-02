@@ -1,11 +1,16 @@
+// lib/views/view_home.dart
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'dart:math' as math;
+
+import 'view_login.dart';     // para navegar al login al hacer logout
+import 'view_profile.dart';   // tab de Perfil
 
 class HomeView extends StatefulWidget {
   const HomeView({
     super.key,
     this.username,
-    this.onSignOut,
+    this.onSignOut, // (opcional, ya no lo usamos)
   });
 
   final String? username;
@@ -19,6 +24,9 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   int _tab = 0;
   late final AnimationController _ac;
 
+  // storage local para borrar token y navegar
+  final _storage = const FlutterSecureStorage();
+
   @override
   void initState() {
     super.initState();
@@ -30,6 +38,16 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   void dispose() {
     _ac.dispose();
     super.dispose();
+  }
+
+  // logout seguro usando ESTE context (no el de LoginView)
+  Future<void> _handleLogout() async {
+    await _storage.delete(key: 'access_token');
+    if (!mounted) return;
+    Navigator.of(context).pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginView()),
+          (_) => false,
+    );
   }
 
   @override
@@ -46,71 +64,8 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
       backgroundColor: bg,
       body: Stack(
         children: [
-          // Fondo degradado con blobs suaves
           const _DecorBackground(),
-          SafeArea(
-            child: RefreshIndicator(
-              onRefresh: () async => Future<void>.delayed(const Duration(milliseconds: 600)),
-              color: primary,
-              child: CustomScrollView(
-                physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
-                slivers: [
-                  SliverToBoxAdapter(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 860),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            // ---------- HEADER BONITO (sin logo de imagen repetido) ----------
-                            _HeaderFancy(
-                              title: 'DailyCulture',
-                              subtitle: hello,
-                              date: today,
-                              onAvatarTap: widget.onSignOut,
-                            ),
-                            const SizedBox(height: 18),
-
-                            // ---------- HOY ----------
-                            _SectionTitle(text: 'Hoy'),
-                            const SizedBox(height: 10),
-                            FadeTransition(
-                              opacity: CurvedAnimation(parent: _ac, curve: Curves.easeOutCubic),
-                              child: const _TodayCard(),
-                            ),
-
-                            const SizedBox(height: 18),
-
-                            // ---------- ACCIONES RÁPIDAS ----------
-                            _SectionTitle(text: 'Acciones rápidas'),
-                            const SizedBox(height: 10),
-                            const _ActionsWrap(), // chips responsivos
-
-                            const SizedBox(height: 18),
-
-                            // ---------- EXPLORAR ----------
-                            _SectionTitle(text: 'Explorar'),
-                            const SizedBox(height: 10),
-                            const _ExploreCard(),
-
-                            const SizedBox(height: 24),
-
-                            // ---------- SUGERENCIAS ----------
-                            _SectionTitle(text: 'Sugerencias para ti'),
-                            const SizedBox(height: 10),
-                            const _SuggestionsRow(),
-
-                            const SizedBox(height: 24),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+          SafeArea(child: _buildTabContent(primary, hello, today)),
         ],
       ),
       bottomNavigationBar: NavigationBar(
@@ -128,6 +83,80 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
     );
   }
 
+  Widget _buildTabContent(Color primary, String hello, String today) {
+    switch (_tab) {
+      case 0:
+        return RefreshIndicator(
+          onRefresh: () async => Future<void>.delayed(const Duration(milliseconds: 600)),
+          color: primary,
+          child: CustomScrollView(
+            physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+            slivers: [
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 860),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _HeaderFancy(
+                          title: 'DailyCulture',
+                          subtitle: hello,
+                          date: today,
+                          onAvatarTap: _handleLogout, // ahora llama al logout local
+                        ),
+                        const SizedBox(height: 18),
+                        const _SectionTitle(text: 'Hoy'),
+                        const SizedBox(height: 10),
+                        FadeTransition(
+                          opacity: CurvedAnimation(parent: _ac, curve: Curves.easeOutCubic),
+                          child: const _TodayCard(),
+                        ),
+                        const SizedBox(height: 18),
+                        const _SectionTitle(text: 'Acciones rápidas'),
+                        const SizedBox(height: 10),
+                        const _ActionsWrap(),
+                        const SizedBox(height: 18),
+                        const _SectionTitle(text: 'Explorar'),
+                        const SizedBox(height: 10),
+                        const _ExploreCard(),
+                        const SizedBox(height: 24),
+                        const _SectionTitle(text: 'Sugerencias para ti'),
+                        const SizedBox(height: 10),
+                        const _SuggestionsRow(),
+                        const SizedBox(height: 24),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+
+      case 1:
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+          children: const [
+            _SectionTitle(text: 'Explorar'),
+            SizedBox(height: 12),
+            _ExploreCard(),
+          ],
+        );
+
+      case 2:
+      // Tab de perfil — recibe el logout local
+        return ProfileView(
+          username: widget.username,
+          onSignOut: _handleLogout,
+        );
+
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
   String _prettyDate(DateTime d) {
     const months = [
       'enero','febrero','marzo','abril','mayo','junio',
@@ -137,7 +166,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   }
 }
 
-/// ---------- Header moderno sin imagen de logo repetida ----------
+/// ---------- Header ----------
 class _HeaderFancy extends StatelessWidget {
   const _HeaderFancy({
     required this.title,
@@ -169,7 +198,6 @@ class _HeaderFancy extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // “Logo” tipográfico (sin asset)
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -304,7 +332,6 @@ class _TodayCard extends StatelessWidget {
   }
 }
 
-/// Chips responsivos en vez de grid rígido
 class _ActionsWrap extends StatelessWidget {
   const _ActionsWrap();
 
@@ -401,7 +428,6 @@ class _ExploreCard extends StatelessWidget {
   }
 }
 
-/// Carrusel horizontal de sugerencias (tarjetas limpias)
 class _SuggestionsRow extends StatelessWidget {
   const _SuggestionsRow();
 
@@ -489,7 +515,6 @@ class _DecorBackground extends StatelessWidget {
 class _BgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    // Gradiente superior a inferior
     final rect = Offset.zero & size;
     final paint = Paint()
       ..shader = const LinearGradient(
@@ -499,7 +524,6 @@ class _BgPainter extends CustomPainter {
       ).createShader(rect);
     canvas.drawRect(rect, paint);
 
-    // Blobs suaves
     void blob(Offset c, double r, Color color) {
       final p = Paint()..color = color.withOpacity(.18);
       canvas.drawCircle(c, r, p);
