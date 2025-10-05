@@ -1,11 +1,11 @@
 // lib/views/view_home.dart
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'dart:math' as math;
 
 import 'view_login.dart';     // para navegar al login al hacer logout
 import 'view_profile.dart';   // tab de Perfil
-import 'view_quiz.dart';      // << NUEVO: vista de Trivia
+import 'view_quiz.dart';      // vista de Trivia
+import 'view_friends.dart';   // << NUEVO: vista de Amigos
 
 class HomeView extends StatefulWidget {
   const HomeView({
@@ -116,13 +116,20 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         ),
                         const SizedBox(height: 18),
 
-                        const SizedBox(height: 12),
-
-                        // --------- NUEVO: botón para abrir la trivia ----------
+                        // --------- Jugar Trivia ----------
                         _OpenTriviaCard(onTap: () {
                           Navigator.push(
                             context,
                             MaterialPageRoute(builder: (_) => const QuizView()),
+                          );
+                        }),
+                        const SizedBox(height: 12),
+
+                        // --------- NUEVO: Amigos (botón abajo) ----------
+                        _FriendsCard(onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const FriendsView()),
                           );
                         }),
 
@@ -341,8 +348,6 @@ class _TodayCard extends StatelessWidget {
   }
 }
 
-
-
 class _OpenTriviaCard extends StatelessWidget {
   const _OpenTriviaCard({required this.onTap});
   final VoidCallback onTap;
@@ -375,6 +380,47 @@ class _OpenTriviaCard extends StatelessWidget {
         title: const Text('Jugar Trivia (OpenTDB)'),
         subtitle: Text(
           'Preguntas de cultura general en 4 opciones.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _FriendsCard extends StatelessWidget {
+  const _FriendsCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEFF7FF), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.group_rounded, color: primary),
+        ),
+        title: const Text('Amigos'),
+        subtitle: Text(
+          'Gestiona solicitudes y compara puntos.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
         ),
         trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
