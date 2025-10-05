@@ -5,11 +5,12 @@ from typing import Optional, List
 
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr, Field
 
 from sqlalchemy import (
-    create_engine, String, DateTime, Boolean, select,
-    func, or_, UniqueConstraint
+    create_engine, String, DateTime, Boolean, select, func, or_,
+    UniqueConstraint, ForeignKey, Integer, update
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, sessionmaker
 from sqlalchemy.exc import IntegrityError
@@ -18,7 +19,7 @@ from dotenv import load_dotenv
 
 # Auth helpers
 from passlib.context import CryptContext
-from jose import jwt
+from jose import jwt, JWTError
 
 # --- carga env
 load_dotenv()
@@ -39,6 +40,9 @@ SessionLocal = sessionmaker(engine, expire_on_commit=False, autoflush=False)
 class Base(DeclarativeBase):
     pass
 
+
+# --------------------------- MODELOS ORM ---------------------------
+
 class UserORM(Base):
     __tablename__ = "users"
     __table_args__ = (UniqueConstraint("email"), UniqueConstraint("username"))
@@ -51,9 +55,23 @@ class UserORM(Base):
     # Permite NULL para filas antiguas; para nuevas siempre se rellena
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
+
+# Tabla simple de puntos acumulados (1:1 con users)
+class PointsORM(Base):
+    __tablename__ = "points"
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+# ¡OJO! crea tablas DESPUÉS de declarar todos los modelos
 Base.metadata.create_all(engine)
 
-# ---------- Pydantic ----------
+
+# --------------------------- Pydantic ---------------------------
+
 username_regex = r"^[a-zA-Z0-9._-]{3,30}$"
 
 class UserBase(BaseModel):
@@ -90,7 +108,20 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     user: User
 
-# ---------- Auth utils ----------
+# Puntos
+class PointsOut(BaseModel):
+    user_id: str
+    total: int
+    updated_at: datetime
+    class Config:
+        from_attributes = True
+
+class AddPointsPayload(BaseModel):
+    amount: int = Field(..., ge=1, le=100000)  # solo sumamos (>=1)
+
+
+# --------------------------- Auth utils ---------------------------
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SECRET_KEY = os.getenv("SECRET_KEY", "CHANGE-ME")
 ALGORITHM = "HS256"
@@ -100,7 +131,6 @@ def hash_password(pw: str) -> str:
     try:
         return pwd_context.hash(pw)
     except Exception as e:
-        # Log y error claro si falta backend de bcrypt
         print("Password hashing failed:", repr(e))
         raise HTTPException(status_code=500, detail="Password hashing failed (bcrypt backend missing).")
 
@@ -115,7 +145,9 @@ def create_access_token(sub: str) -> str:
     payload = {"sub": sub, "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MIN)}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
-# ---------- FastAPI ----------
+
+# --------------------------- FastAPI ---------------------------
+
 app = FastAPI(title="DailyCulture API", version="1.0.0")
 
 app.add_middleware(
@@ -126,12 +158,72 @@ app.add_middleware(
     allow_credentials=True,
 )
 
+security = HTTPBearer()
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+# --------------------------- Utilidades ---------------------------
+
+def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db),
+) -> UserORM:
+    token = creds.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token inválido")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+    user = db.get(UserORM, user_id)
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    return user
+
+
+def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[str] = None):
+    q = select(UserORM).where(or_(func.lower(UserORM.email) == email.lower(),
+                                  func.lower(UserORM.username) == username.lower()))
+    for u in db.scalars(q).all():
+        if exclude_id and u.id == exclude_id:
+            continue
+        if u.email.lower() == email.lower():
+            raise HTTPException(status_code=409, detail="Email ya está en uso")
+        if u.username.lower() == username.lower():
+            raise HTTPException(status_code=409, detail="Username ya está en uso")
+
+
+def _ensure_points_row(db: Session, user_id: str) -> PointsORM:
+    row = db.get(PointsORM, user_id)
+    if not row:
+        row = PointsORM(user_id=user_id, total=0)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+def _add_points(db: Session, user_id: str, amount: int) -> PointsORM:
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="amount debe ser positivo")
+    _ensure_points_row(db, user_id)
+    db.execute(
+        update(PointsORM)
+        .where(PointsORM.user_id == user_id)
+        .values(total=PointsORM.total + amount)
+    )
+    db.commit()
+    return db.get(PointsORM, user_id)
+
+
+# --------------------------- Rutas básicas ---------------------------
 
 @app.get("/")
 def root():
@@ -153,18 +245,9 @@ def health():
         "passlib_has_bcrypt": "bcrypt" in pwd_context.schemes(),
     }
 
-def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[str] = None):
-    q = select(UserORM).where(or_(func.lower(UserORM.email) == email.lower(),
-                                  func.lower(UserORM.username) == username.lower()))
-    for u in db.scalars(q).all():
-        if exclude_id and u.id == exclude_id:
-            continue
-        if u.email.lower() == email.lower():
-            raise HTTPException(status_code=409, detail="Email ya está en uso")
-        if u.username.lower() == username.lower():
-            raise HTTPException(status_code=409, detail="Username ya está en uso")
 
-# -------- Users CRUD --------
+# --------------------------- Users CRUD ---------------------------
+
 @app.get("/users", response_model=List[User])
 def list_users(q: Optional[str] = Query(None), limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     stmt = select(UserORM).order_by(UserORM.created_at.desc())
@@ -251,7 +334,9 @@ def delete_user(user_id: str, db: Session = Depends(get_db)):
     db.commit()
     return None
 
-# -------- Auth --------
+
+# --------------------------- Auth ---------------------------
+
 @app.post("/auth/login", response_model=TokenResponse)
 def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
     name = payload.username.strip().lower()
@@ -261,3 +346,28 @@ def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Credenciales inválidas")
     token = create_access_token(user.id)
     return TokenResponse(access_token=token, user=User.model_validate(user))
+
+# Devuelve el usuario autenticado (útil para tu ProfileView)
+@app.get("/auth/me", response_model=User)
+def auth_me(user: UserORM = Depends(get_current_user)):
+    return User.model_validate(user)
+
+
+# --------------------------- Puntos simples ---------------------------
+
+@app.get("/points/me", response_model=PointsOut)
+def get_my_points(
+    user: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = _ensure_points_row(db, user.id)
+    return PointsOut.model_validate(row)
+
+@app.post("/points/add", response_model=PointsOut)
+def add_my_points(
+    payload: AddPointsPayload,
+    user: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = _add_points(db, user.id, payload.amount)
+    return PointsOut.model_validate(row)
