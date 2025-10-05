@@ -115,9 +115,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                           child: const _TodayCard(),
                         ),
                         const SizedBox(height: 18),
-                        const _SectionTitle(text: 'Acciones rápidas'),
-                        const SizedBox(height: 10),
-                        const _ActionsWrap(),
+
                         const SizedBox(height: 12),
 
                         // --------- NUEVO: botón para abrir la trivia ----------
@@ -343,60 +341,7 @@ class _TodayCard extends StatelessWidget {
   }
 }
 
-class _ActionsWrap extends StatelessWidget {
-  const _ActionsWrap();
 
-  @override
-  Widget build(BuildContext context) {
-    const primary = Color(0xFF5B53D6);
-    final items = const [
-      (Icons.bolt_outlined, 'Reto rápido'),
-      (Icons.book_outlined, 'Lecturas'),
-      (Icons.play_circle_outline, 'Vídeos'),
-      (Icons.event_outlined, 'Eventos'),
-      (Icons.insights_outlined, 'Progreso'),
-      (Icons.star_border, 'Favoritos'),
-    ];
-
-    return Wrap(
-      spacing: 10,
-      runSpacing: 10,
-      children: items
-          .map(
-            (e) => InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: () {},
-          child: Ink(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFF0ECE4)),
-              boxShadow: const [BoxShadow(color: Color(0x12000000), blurRadius: 12, offset: Offset(0, 6))],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  height: 34,
-                  width: 34,
-                  decoration: BoxDecoration(
-                    color: primary.withOpacity(.12),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Icon(e.$1, color: primary),
-                ),
-                const SizedBox(width: 10),
-                Text(e.$2, style: const TextStyle(fontWeight: FontWeight.w700)),
-              ],
-            ),
-          ),
-        ),
-      )
-          .toList(),
-    );
-  }
-}
 
 class _OpenTriviaCard extends StatelessWidget {
   const _OpenTriviaCard({required this.onTap});

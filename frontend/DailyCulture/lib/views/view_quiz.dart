@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import '../models/points.dart'; // <<< Modelo para parsear /points/add
 
 class QuizView extends StatefulWidget {
   const QuizView({
@@ -24,6 +27,12 @@ class _QuizViewState extends State<QuizView> {
   static const _bg = Color(0xFFFBF7EF);
   static const _primary = Color(0xFF5B53D6);
 
+  // --- API base (tu despliegue en Azure) ---
+  static const _base =
+      'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net';
+
+  final _storage = const FlutterSecureStorage();
+
   bool _loading = false;
   String? _error;
   int _index = 0;
@@ -37,6 +46,9 @@ class _QuizViewState extends State<QuizView> {
   bool _loadingCats = false;
   List<_Cat> _cats = [];
   int? _selectedCategoryId; // null = todas
+
+  // Para evitar doble bono si se relanza la hoja de resultados
+  bool _bonusSent = false;
 
   @override
   void initState() {
@@ -78,6 +90,7 @@ class _QuizViewState extends State<QuizView> {
       _score = 0;
       _selected = null;
       _revealed = false;
+      _bonusSent = false;
     });
 
     try {
@@ -135,15 +148,48 @@ class _QuizViewState extends State<QuizView> {
     }
   }
 
+  /* ======================= PUNTOS (API) ====================== */
+
+  Future<Points?> _sendPoints(int amount) async {
+    try {
+      final token = await _storage.read(key: 'access_token');
+      if (token == null || token.isEmpty) return null;
+
+      final uri = Uri.parse('$_base/points/add');
+      final res = await http.post(
+        uri,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: jsonEncode({'amount': amount}),
+      );
+
+      if (res.statusCode == 200) {
+        final map = jsonDecode(res.body) as Map<String, dynamic>;
+        return Points.fromJson(map);
+      } else {
+        // Puedes mostrar un snackbar si quieres ver el error:
+        // ScaffoldMessenger.of(context).showSnackBar(
+        //   SnackBar(content: Text('No se pudieron registrar puntos (HTTP ${res.statusCode}).')),
+        // );
+      }
+    } catch (_) {
+      // Silencioso; evita romper UX si no hay red
+    }
+    return null;
+  }
+
   /* ======================= QUIZ FLOWS ====================== */
 
-  // ahora solo marca la opción; el score se decide al confirmar
+  // Ahora solo marca la opción; el score y puntos se deciden al confirmar
   void _onPick(int i) {
     if (_revealed) return;
     setState(() => _selected = i);
   }
 
-  // botón principal SIEMPRE habilitado (maneja confirmar/siguiente/saltar)
+  // Botón principal SIEMPRE habilitado (maneja confirmar/siguiente/saltar)
   void _onPrimaryPressed() {
     if (_qs.isEmpty) return;
 
@@ -153,10 +199,15 @@ class _QuizViewState extends State<QuizView> {
         _next();
       } else {
         // confirmar y revelar
+        final isCorrect = _selected == _qs[_index].correctIndex;
         setState(() {
           _revealed = true;
-          if (_selected == _qs[_index].correctIndex) _score++;
+          if (isCorrect) _score++;
         });
+        if (isCorrect) {
+          // 1 punto por acierto
+          _sendPoints(1);
+        }
       }
     } else {
       _next();
@@ -184,6 +235,12 @@ class _QuizViewState extends State<QuizView> {
   }
 
   void _showResults() {
+    // Bonus de 5 puntos por completar las 10 preguntas (una sola vez)
+    if (!_bonusSent && _qs.length >= 10) {
+      _bonusSent = true;
+      _sendPoints(5);
+    }
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,

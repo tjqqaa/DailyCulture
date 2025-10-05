@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/user.dart';
+import '../models/points.dart'; // <<< añade el modelo de puntos
 import 'view_login.dart';
 
 class ProfileView extends StatefulWidget {
@@ -33,12 +34,19 @@ class _ProfileViewState extends State<ProfileView> {
   bool _loading = false;
   User? _user;
 
+  // --- puntos ---
+  bool _loadingPoints = false;
+  Points? _points;
+
   @override
   void initState() {
     super.initState();
     _hydrateFromCacheOrClaims();
     _fetchProfile();
+    _fetchPoints(); // <<< carga los puntos también
   }
+
+  /* ======================= Hydration local ======================= */
 
   Future<void> _hydrateFromCacheOrClaims() async {
     final cached = await _storage.read(key: 'user_cache');
@@ -75,6 +83,8 @@ class _ProfileViewState extends State<ProfileView> {
       });
     }
   }
+
+  /* ======================== Fetch remoto ========================= */
 
   Future<void> _fetchProfile() async {
     setState(() => _loading = true);
@@ -114,6 +124,43 @@ class _ProfileViewState extends State<ProfileView> {
       if (mounted) setState(() => _loading = false);
     }
   }
+
+  // --- GET /points/me ---
+  Future<void> _fetchPoints() async {
+    setState(() => _loadingPoints = true);
+    try {
+      final token = await _storage.read(key: 'access_token');
+      if (token == null || token.isEmpty) {
+        await _doLogout();
+        return;
+      }
+      final uri = Uri.parse('$_base/points/me');
+      final res = await http.get(uri, headers: {
+        HttpHeaders.acceptHeader: 'application/json',
+        HttpHeaders.authorizationHeader: 'Bearer $token',
+      });
+
+      if (res.statusCode == 200) {
+        final map = jsonDecode(res.body);
+        if (map is Map<String, dynamic>) {
+          setState(() => _points = Points.fromJson(map));
+        }
+      } else if (res.statusCode == 401) {
+        await _doLogout();
+        return;
+      } else {
+        // opcional: mostrar snackbar de error suave
+        // if (mounted) ScaffoldMessenger.of(context)
+        //   .showSnackBar(SnackBar(content: Text('No se pudieron cargar los puntos (${res.statusCode}).')));
+      }
+    } catch (_) {
+      // silencio
+    } finally {
+      if (mounted) setState(() => _loadingPoints = false);
+    }
+  }
+
+  /* ===================== Normalización modelo ==================== */
 
   bool _isIncomplete(User u) =>
       u.email == '—' || u.createdAt.millisecondsSinceEpoch == 0;
@@ -188,6 +235,8 @@ class _ProfileViewState extends State<ProfileView> {
     return utf8.decode(base64.decode(out));
   }
 
+  /* =========================== Logout ========================== */
+
   Future<void> _doLogout() async {
     await _storage.delete(key: 'access_token');
     await _storage.delete(key: 'user_cache');
@@ -198,6 +247,8 @@ class _ProfileViewState extends State<ProfileView> {
           (_) => false,
     );
   }
+
+  /* ============================ UI ============================ */
 
   String _displayName(User u) =>
       (u.fullName != null && u.fullName!.trim().isNotEmpty)
@@ -218,11 +269,22 @@ class _ProfileViewState extends State<ProfileView> {
     return '${d.day.toString().padLeft(2, '0')} ${months[d.month - 1]} ${d.year}';
   }
 
+  Future<void> _refreshAll() async {
+    await Future.wait([
+      _fetchProfile(),
+      _fetchPoints(),
+    ]);
+  }
+
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF5B53D6);
     const bg = Color(0xFFFBF7EF);
     final u = _user;
+
+    final pointsText = _points == null
+        ? (_loadingPoints ? 'Cargando…' : '—')
+        : '${_points!.total}';
 
     return Scaffold(
       backgroundColor: bg,
@@ -232,7 +294,7 @@ class _ProfileViewState extends State<ProfileView> {
           SafeArea(
             child: RefreshIndicator(
               color: primary,
-              onRefresh: _fetchProfile,
+              onRefresh: _refreshAll, // <<< refresca perfil + puntos
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -242,7 +304,7 @@ class _ProfileViewState extends State<ProfileView> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Header
+                        // -------- Header --------
                         Container(
                           padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
@@ -295,7 +357,7 @@ class _ProfileViewState extends State<ProfileView> {
                         ),
                         const SizedBox(height: 18),
 
-                        // Card info (sin ID)
+                        // -------- Card info (incluye Puntos) --------
                         Card(
                           elevation: 10,
                           shadowColor: Colors.black12,
@@ -335,6 +397,7 @@ class _ProfileViewState extends State<ProfileView> {
                                 ),
                                 const SizedBox(height: 16),
                                 _InfoRow(label: 'Email', value: u.email),
+                                _InfoRow(label: 'Puntos', value: pointsText), // <<< PUNTOS
                                 _InfoRow(label: 'Creado el', value: _prettyDate(u.createdAt), isLast: true),
                               ],
                             ),
@@ -342,7 +405,7 @@ class _ProfileViewState extends State<ProfileView> {
                         ),
                         const SizedBox(height: 18),
 
-                        // Logout
+                        // -------- Logout --------
                         SizedBox(
                           width: double.infinity,
                           height: 52,
@@ -357,7 +420,7 @@ class _ProfileViewState extends State<ProfileView> {
                           ),
                         ),
 
-                        if (_loading) ...[
+                        if (_loading || _loadingPoints) ...[
                           const SizedBox(height: 14),
                           const Center(child: SizedBox(height: 22, width: 22, child: CircularProgressIndicator(strokeWidth: 2))),
                         ],
@@ -416,7 +479,7 @@ class _SkeletonProfile extends StatelessWidget {
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [bar(160), bar(90)])),
         ]),
         const SizedBox(height: 16),
-        bar(180), bar(160),
+        bar(180), bar(160), // email / puntos skeleton
       ],
     );
   }
