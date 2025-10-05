@@ -1,7 +1,7 @@
 import os
 from uuid import uuid4
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Literal, Tuple  # << añadido Literal, Tuple
 
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,11 +52,9 @@ class UserORM(Base):
     full_name: Mapped[Optional[str]] = mapped_column(String(255))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    # Permite NULL para filas antiguas; para nuevas siempre se rellena
     password_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
-
-# Tabla simple de puntos acumulados (1:1 con users)
+# Puntos totales (1:1 con users)
 class PointsORM(Base):
     __tablename__ = "points"
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
@@ -65,8 +63,31 @@ class PointsORM(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
 
+# ⚠️ Si ya existían tablas, esto las crea; FriendORM se crea más abajo y volvemos a llamar.
+Base.metadata.create_all(engine)
 
-# ¡OJO! crea tablas DESPUÉS de declarar todos los modelos
+# --- AMIGOS ---
+class FriendORM(Base):
+    __tablename__ = "friends"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+
+    # relación NO dirigida: normalizamos el par para clave única
+    user_a_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+    user_b_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+
+    # quién envió la solicitud
+    requested_by_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), nullable=False)
+
+    # 'pending' | 'accepted' | 'declined' | 'blocked'
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
+
+    # evita duplicados: min(a,b):max(a,b)
+    pair_key: Mapped[str] = mapped_column(String(80), unique=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    responded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+# crea la tabla friends si no existía
 Base.metadata.create_all(engine)
 
 
@@ -118,6 +139,28 @@ class PointsOut(BaseModel):
 
 class AddPointsPayload(BaseModel):
     amount: int = Field(..., ge=1, le=100000)  # solo sumamos (>=1)
+
+# Amigos
+class Friend(BaseModel):
+    id: str
+    user_a_id: str
+    user_b_id: str
+    requested_by_id: str
+    status: Literal["pending", "accepted", "declined", "blocked"]
+    created_at: datetime
+    responded_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
+class FriendRequestCreate(BaseModel):
+    to_user_id: Optional[str] = None
+    to_username: Optional[str] = None
+
+class LeaderItem(BaseModel):
+    user_id: str
+    username: str
+    full_name: Optional[str] = None
+    points: int
 
 
 # --------------------------- Auth utils ---------------------------
@@ -188,7 +231,6 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     return user
 
-
 def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[str] = None):
     q = select(UserORM).where(or_(func.lower(UserORM.email) == email.lower(),
                                   func.lower(UserORM.username) == username.lower()))
@@ -199,7 +241,6 @@ def _ensure_unique(db: Session, email: str, username: str, exclude_id: Optional[
             raise HTTPException(status_code=409, detail="Email ya está en uso")
         if u.username.lower() == username.lower():
             raise HTTPException(status_code=409, detail="Username ya está en uso")
-
 
 def _ensure_points_row(db: Session, user_id: str) -> PointsORM:
     row = db.get(PointsORM, user_id)
@@ -221,6 +262,16 @@ def _add_points(db: Session, user_id: str, amount: int) -> PointsORM:
     )
     db.commit()
     return db.get(PointsORM, user_id)
+
+# --- helpers amigos ---
+def _pair_key(a: str, b: str) -> Tuple[str, str, str]:
+    aa, bb = sorted([a, b])
+    return aa, bb, f"{aa}:{bb}"
+
+def _get_friendship(db: Session, me_id: str, other_id: str) -> Optional[FriendORM]:
+    _, _, pk = _pair_key(me_id, other_id)
+    stmt = select(FriendORM).where(FriendORM.pair_key == pk)
+    return db.scalars(stmt).first()
 
 
 # --------------------------- Rutas básicas ---------------------------
@@ -347,7 +398,6 @@ def auth_login(payload: LoginPayload, db: Session = Depends(get_db)):
     token = create_access_token(user.id)
     return TokenResponse(access_token=token, user=User.model_validate(user))
 
-# Devuelve el usuario autenticado (útil para tu ProfileView)
 @app.get("/auth/me", response_model=User)
 def auth_me(user: UserORM = Depends(get_current_user)):
     return User.model_validate(user)
@@ -356,18 +406,193 @@ def auth_me(user: UserORM = Depends(get_current_user)):
 # --------------------------- Puntos simples ---------------------------
 
 @app.get("/points/me", response_model=PointsOut)
-def get_my_points(
-    user: UserORM = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def get_my_points(user: UserORM = Depends(get_current_user), db: Session = Depends(get_db)):
     row = _ensure_points_row(db, user.id)
     return PointsOut.model_validate(row)
 
 @app.post("/points/add", response_model=PointsOut)
-def add_my_points(
-    payload: AddPointsPayload,
-    user: UserORM = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def add_my_points(payload: AddPointsPayload, user: UserORM = Depends(get_current_user), db: Session = Depends(get_db)):
     row = _add_points(db, user.id, payload.amount)
     return PointsOut.model_validate(row)
+
+
+# --------------------------- Amigos ---------------------------
+
+@app.post("/friends/request", response_model=Friend, status_code=201)
+def send_friend_request(
+    payload: FriendRequestCreate,
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    if not payload.to_user_id and not payload.to_username:
+        raise HTTPException(status_code=400, detail="Debes enviar to_user_id o to_username")
+
+    # resolver destinatario
+    other = None
+    if payload.to_user_id:
+        other = db.get(UserORM, payload.to_user_id)
+    elif payload.to_username:
+        stmt = select(UserORM).where(func.lower(UserORM.username) == payload.to_username.strip().lower())
+        other = db.scalars(stmt).first()
+
+    if not other:
+        raise HTTPException(status_code=404, detail="Usuario destino no encontrado")
+    if other.id == me.id:
+        raise HTTPException(status_code=400, detail="No puedes enviarte amistad a ti mismo")
+
+    a, b, pk = _pair_key(me.id, other.id)
+    existing = _get_friendship(db, me.id, other.id)
+    if existing:
+        if existing.status == "accepted":
+            raise HTTPException(status_code=409, detail="Ya sois amigos")
+        if existing.status == "pending":
+            raise HTTPException(status_code=409, detail="Solicitud ya pendiente")
+        # reabrimos declined/blocked como pending
+        existing.status = "pending"
+        existing.requested_by_id = me.id
+        existing.responded_at = None
+        db.commit()
+        db.refresh(existing)
+        return Friend.model_validate(existing)
+
+    fr = FriendORM(
+        user_a_id=a, user_b_id=b,
+        requested_by_id=me.id,
+        status="pending",
+        pair_key=pk,
+    )
+    db.add(fr)
+    db.commit()
+    db.refresh(fr)
+    return Friend.model_validate(fr)
+
+@app.post("/friends/{other_user_id}/accept", response_model=Friend)
+def accept_friend_request(
+    other_user_id: str,
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    fr = _get_friendship(db, me.id, other_user_id)
+    if not fr:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if fr.status != "pending" or fr.requested_by_id == me.id:
+        raise HTTPException(status_code=400, detail="No puedes aceptar esta solicitud")
+    fr.status = "accepted"
+    fr.responded_at = datetime.utcnow()
+    db.commit()
+    db.refresh(fr)
+    return Friend.model_validate(fr)
+
+@app.post("/friends/{other_user_id}/decline", response_model=Friend)
+def decline_friend_request(
+    other_user_id: str,
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    fr = _get_friendship(db, me.id, other_user_id)
+    if not fr:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada")
+    if fr.status != "pending" or fr.requested_by_id == me.id:
+        raise HTTPException(status_code=400, detail="No puedes rechazar esta solicitud")
+    fr.status = "declined"
+    fr.responded_at = datetime.utcnow()
+    db.commit()
+    db.refresh(fr)
+    return Friend.model_validate(fr)
+
+@app.delete("/friends/{other_user_id}", status_code=204)
+def remove_friend(
+    other_user_id: str,
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    fr = _get_friendship(db, me.id, other_user_id)
+    if not fr:
+        return None
+    db.delete(fr)
+    db.commit()
+    return None
+
+@app.get("/friends", response_model=List[User])
+def list_friends(
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    stmt = select(FriendORM).where(
+        FriendORM.status == "accepted",
+        or_(FriendORM.user_a_id == me.id, FriendORM.user_b_id == me.id),
+    )
+    rows = db.scalars(stmt).all()
+    friend_ids = [
+        (r.user_b_id if r.user_a_id == me.id else r.user_a_id) for r in rows
+    ]
+    if not friend_ids:
+        return []
+    ustmt = select(UserORM).where(UserORM.id.in_(friend_ids))
+    return [User.model_validate(u) for u in db.scalars(ustmt).all()]
+
+@app.get("/friends/requests")
+def list_friend_requests(
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    incoming_stmt = select(FriendORM).where(
+        FriendORM.status == "pending",
+        FriendORM.requested_by_id != me.id,
+        or_(FriendORM.user_a_id == me.id, FriendORM.user_b_id == me.id),
+    )
+    outgoing_stmt = select(FriendORM).where(
+        FriendORM.status == "pending",
+        FriendORM.requested_by_id == me.id,
+    )
+    incoming = [Friend.model_validate(x) for x in db.scalars(incoming_stmt).all()]
+    outgoing = [Friend.model_validate(x) for x in db.scalars(outgoing_stmt).all()]
+    return {"incoming": incoming, "outgoing": outgoing}
+
+
+# ---------------------- Leaderboard de amigos ----------------------
+
+@app.get("/points/leaderboard/friends", response_model=List[LeaderItem])
+def friends_leaderboard(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    me: UserORM = Depends(get_current_user),
+):
+    # ids de amigos aceptados
+    fstmt = select(FriendORM).where(
+        FriendORM.status == "accepted",
+        or_(FriendORM.user_a_id == me.id, FriendORM.user_b_id == me.id),
+    )
+    friends = db.scalars(fstmt).all()
+    friend_ids = set(
+        (r.user_b_id if r.user_a_id == me.id else r.user_a_id) for r in friends
+    )
+    # inclúyete
+    user_ids = list(friend_ids | {me.id})
+    if not user_ids:
+        user_ids = [me.id]
+
+    # outer join para incluir usuarios sin puntos aún
+    stmt = (
+        select(
+            UserORM.id,
+            UserORM.username,
+            UserORM.full_name,
+            func.coalesce(PointsORM.total, 0).label("points"),
+        )
+        .select_from(UserORM)
+        .outerjoin(PointsORM, PointsORM.user_id == UserORM.id)
+        .where(UserORM.id.in_(user_ids))
+        .order_by(func.coalesce(PointsORM.total, 0).desc(), UserORM.username.asc())
+        .limit(limit)
+    )
+    rows = db.execute(stmt).all()
+    return [
+        LeaderItem(
+            user_id=row[0],
+            username=row[1],
+            full_name=row[2],
+            points=int(row[3] or 0),
+        )
+        for row in rows
+    ]
