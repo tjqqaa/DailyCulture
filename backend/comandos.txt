@@ -6,6 +6,14 @@ API: https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net/doc
 
 
 
+----
+
+cd C:\Users\aquin\Desktop\TFG\DailyCulture\backend
+.\.venv\Scripts\Activate.ps1
+python -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
+
+
+
 
 
 
