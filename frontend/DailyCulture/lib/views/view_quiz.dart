@@ -1,18 +1,23 @@
 // lib/views/view_quiz.dart
 import 'dart:convert';
+import 'dart:io' show Platform; // para resolver localhost en Android
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import '../models/points.dart'; // <<< Modelo para parsear /points/add
+// ── Base de la API (puedes pasarla en build/run con --dart-define=API_BASE=...)
+const String kApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'http://127.0.0.1:8000',
+);
 
 class QuizView extends StatefulWidget {
   const QuizView({
     super.key,
     this.amount = 10,
-    this.categoryId,     // ej. 18 = Science: Computers
-    this.difficulty,     // 'easy' | 'medium' | 'hard'
+    this.categoryId,
+    this.difficulty,
   });
 
   final int amount;
@@ -27,27 +32,22 @@ class _QuizViewState extends State<QuizView> {
   static const _bg = Color(0xFFFBF7EF);
   static const _primary = Color(0xFF5B53D6);
 
-  // --- API base (tu despliegue en Azure) ---
-  static const _base =
-      'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net';
-
   final _storage = const FlutterSecureStorage();
 
   bool _loading = false;
   String? _error;
   int _index = 0;
   int _score = 0;
-  int? _selected;   // índice elegido en la pregunta actual
+  int? _selected;
   bool _revealed = false;
 
-  late List<_Q> _qs;
+  List<_Q> _qs = const [];
 
-  // ---------- categorías (filtro) ----------
+  // categorías (filtro)
   bool _loadingCats = false;
   List<_Cat> _cats = [];
-  int? _selectedCategoryId; // null = todas
+  int? _selectedCategoryId;
 
-  // Para evitar doble bono si se relanza la hoja de resultados
   bool _bonusSent = false;
 
   @override
@@ -58,7 +58,32 @@ class _QuizViewState extends State<QuizView> {
     _fetchQuestions();
   }
 
-  /* ========================= DATA ========================= */
+  /* ========================= Helpers API ========================= */
+
+  // Normaliza la BASE: si es 127.0.0.1/localhost en Android => 10.0.2.2
+  String get _normalizedBase {
+    var base = kApiBase.trim();
+    if (Platform.isAndroid) {
+      base = base
+          .replaceFirst('http://localhost', 'http://10.0.2.2')
+          .replaceFirst('http://127.0.0.1', 'http://10.0.2.2');
+    }
+    // quita / final
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    return base;
+  }
+
+  Uri _apiUri(String path) {
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$_normalizedBase$p');
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /* ========================= DATA (OpenTDB) ========================= */
 
   Future<void> _fetchCategories() async {
     setState(() => _loadingCats = true);
@@ -75,7 +100,7 @@ class _QuizViewState extends State<QuizView> {
       if (!mounted) return;
       setState(() => _cats = cats);
     } catch (_) {
-      // silencioso: el quiz funciona sin el filtro
+      // silencioso
     } finally {
       if (mounted) setState(() => _loadingCats = false);
     }
@@ -97,12 +122,11 @@ class _QuizViewState extends State<QuizView> {
       final params = <String, String>{
         'amount': widget.amount.toString(),
         'type': 'multiple',
-        'encode': 'url3986', // luego decodificamos
+        'encode': 'url3986',
       };
 
       final effectiveCat = _selectedCategoryId ?? widget.categoryId;
       if (effectiveCat != null) params['category'] = effectiveCat.toString();
-
       if (widget.difficulty != null && widget.difficulty!.isNotEmpty) {
         params['difficulty'] = widget.difficulty!;
       }
@@ -150,63 +174,67 @@ class _QuizViewState extends State<QuizView> {
 
   /* ======================= PUNTOS (API) ====================== */
 
-  Future<Points?> _sendPoints(int amount) async {
+  /// Suma puntos en tu backend: true si OK. Muestra SnackBars en caso de error.
+  Future<bool> _sendPoints(int amount) async {
+    final client = http.Client();
     try {
       final token = await _storage.read(key: 'access_token');
-      if (token == null || token.isEmpty) return null;
+      if (token == null || token.isEmpty) {
+        _snack('Sesión inválida. Inicia sesión de nuevo.');
+        return false;
+      }
 
-      final uri = Uri.parse('$_base/points/add');
-      final res = await http.post(
-        uri,
+      final res = await client
+          .post(
+        _apiUri('/points/add'),
         headers: {
           'Authorization': 'Bearer $token',
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
         body: jsonEncode({'amount': amount}),
-      );
+      )
+          .timeout(const Duration(seconds: 10));
 
-      if (res.statusCode == 200) {
-        final map = jsonDecode(res.body) as Map<String, dynamic>;
-        return Points.fromJson(map);
-      } else {
-        // Puedes mostrar un snackbar si quieres ver el error:
-        // ScaffoldMessenger.of(context).showSnackBar(
-        //   SnackBar(content: Text('No se pudieron registrar puntos (HTTP ${res.statusCode}).')),
-        // );
-      }
-    } catch (_) {
-      // Silencioso; evita romper UX si no hay red
+      if (res.statusCode == 200) return true;
+
+      String msg = 'Error al registrar puntos (${res.statusCode})';
+      try {
+        final m = jsonDecode(res.body);
+        if (m is Map && m['detail'] != null) msg = m['detail'].toString();
+      } catch (_) {}
+      _snack(msg);
+      return false;
+    } on Exception catch (e) {
+      _snack('Error de red al sumar puntos: $e');
+      return false;
+    } finally {
+      client.close();
     }
-    return null;
   }
 
   /* ======================= QUIZ FLOWS ====================== */
 
-  // Ahora solo marca la opción; el score y puntos se deciden al confirmar
   void _onPick(int i) {
     if (_revealed) return;
     setState(() => _selected = i);
   }
 
-  // Botón principal SIEMPRE habilitado (maneja confirmar/siguiente/saltar)
-  void _onPrimaryPressed() {
+  Future<void> _onPrimaryPressed() async {
     if (_qs.isEmpty) return;
 
     if (!_revealed) {
       if (_selected == null) {
-        // saltar sin contestar
         _next();
       } else {
-        // confirmar y revelar
         final isCorrect = _selected == _qs[_index].correctIndex;
         setState(() {
           _revealed = true;
           if (isCorrect) _score++;
         });
         if (isCorrect) {
-          // 1 punto por acierto
-          _sendPoints(1);
+          // 1 punto por acierto (se espera la llamada)
+          await _sendPoints(1);
         }
       }
     } else {
@@ -216,9 +244,7 @@ class _QuizViewState extends State<QuizView> {
 
   String _primaryLabel() {
     if (_qs.isEmpty) return '...';
-    if (!_revealed) {
-      return _selected == null ? 'Saltar' : 'Confirmar';
-    }
+    if (!_revealed) return _selected == null ? 'Saltar' : 'Confirmar';
     return (_index + 1 == _qs.length) ? 'Ver resultados' : 'Siguiente';
   }
 
@@ -234,13 +260,14 @@ class _QuizViewState extends State<QuizView> {
     }
   }
 
-  void _showResults() {
-    // Bonus de 5 puntos por completar las 10 preguntas (una sola vez)
+  Future<void> _showResults() async {
+    // Bonus de 5 puntos por completar al menos 10 preguntas (una sola vez)
     if (!_bonusSent && _qs.length >= 10) {
       _bonusSent = true;
-      _sendPoints(5);
+      await _sendPoints(5);
     }
 
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -250,7 +277,7 @@ class _QuizViewState extends State<QuizView> {
       ),
       builder: (ctx) {
         final total = _qs.length;
-        final pct = (_score / total * 100).round();
+        final pct = total == 0 ? 0 : (_score / total * 100).round();
         return Padding(
           padding: EdgeInsets.only(
             left: 20, right: 20, top: 16,
@@ -273,7 +300,7 @@ class _QuizViewState extends State<QuizView> {
                     child: OutlinedButton(
                       onPressed: () {
                         Navigator.pop(ctx);
-                        Navigator.pop(context); // ← volver a Home
+                        Navigator.pop(context); // volver a Home
                       },
                       style: OutlinedButton.styleFrom(
                         minimumSize: const Size(0, 48),
@@ -291,7 +318,9 @@ class _QuizViewState extends State<QuizView> {
                       },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: _primary,
+                        foregroundColor: Colors.white,
                         minimumSize: const Size(0, 48),
+                        textStyle: const TextStyle(fontWeight: FontWeight.w800),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                       ),
                       child: const Text('Jugar otra vez'),
@@ -323,7 +352,7 @@ class _QuizViewState extends State<QuizView> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                 children: [
-                  // ---------- Header con botón de volver ----------
+                  // Header
                   Container(
                     padding: const EdgeInsets.all(18),
                     decoration: BoxDecoration(
@@ -333,7 +362,9 @@ class _QuizViewState extends State<QuizView> {
                         end: Alignment.bottomRight,
                       ),
                       borderRadius: BorderRadius.circular(22),
-                      boxShadow: const [BoxShadow(color: Color(0x22000000), blurRadius: 18, offset: Offset(0, 10))],
+                      boxShadow: const [
+                        BoxShadow(color: Color(0x22000000), blurRadius: 18, offset: Offset(0, 10)),
+                      ],
                     ),
                     child: Row(
                       children: [
@@ -384,7 +415,7 @@ class _QuizViewState extends State<QuizView> {
                   ),
                   const SizedBox(height: 12),
 
-                  // ---------- Filtro de categoría ----------
+                  // Filtro de categoría
                   if (_cats.isNotEmpty || _loadingCats)
                     Card(
                       elevation: 10,
@@ -400,10 +431,7 @@ class _QuizViewState extends State<QuizView> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text('Filtrar por categoría',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w800,
-                                  color: Colors.black.withOpacity(.85),
-                                )),
+                                style: TextStyle(fontWeight: FontWeight.w800, color: Colors.black.withOpacity(.85))),
                             const SizedBox(height: 8),
                             Row(
                               children: [
@@ -419,14 +447,8 @@ class _QuizViewState extends State<QuizView> {
                                       ),
                                     ),
                                     items: [
-                                      const DropdownMenuItem<int?>(
-                                        value: null,
-                                        child: Text('Todas las categorías'),
-                                      ),
-                                      ..._cats.map((c) => DropdownMenuItem<int?>(
-                                        value: c.id,
-                                        child: Text(c.name),
-                                      )),
+                                      const DropdownMenuItem<int?>(value: null, child: Text('Todas las categorías')),
+                                      ..._cats.map((c) => DropdownMenuItem<int?>(value: c.id, child: Text(c.name))),
                                     ],
                                     onChanged: (v) {
                                       setState(() => _selectedCategoryId = v);
@@ -443,7 +465,7 @@ class _QuizViewState extends State<QuizView> {
 
                   const SizedBox(height: 12),
 
-                  // ---------- Contenido del quiz ----------
+                  // Contenido del quiz
                   if (_error != null) ...[
                     _ErrorCard(message: _error!, onRetry: _fetchQuestions),
                   ] else if (_loading) ...[
@@ -460,6 +482,7 @@ class _QuizViewState extends State<QuizView> {
                       onPick: _onPick,
                     ),
                     const SizedBox(height: 14),
+                    // Botón principal con texto SIEMPRE legible
                     Row(
                       children: [
                         Expanded(
@@ -467,8 +490,12 @@ class _QuizViewState extends State<QuizView> {
                             onPressed: _qs.isEmpty ? null : _onPrimaryPressed,
                             style: ElevatedButton.styleFrom(
                               backgroundColor: _primary,
+                              foregroundColor: Colors.white,
+                              textStyle: const TextStyle(fontWeight: FontWeight.w800),
                               minimumSize: const Size(0, 50),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              disabledForegroundColor: Colors.white70,
+                              disabledBackgroundColor: _primary.withOpacity(.35),
                             ),
                             child: Text(_primaryLabel()),
                           ),
@@ -527,19 +554,36 @@ class _QuestionCard extends StatelessWidget {
   final bool revealed;
   final void Function(int i) onPick;
 
+  Widget _chip(String text, {Color? bg, Color? fg, double? maxWidth}) {
+    return Container(
+      constraints: maxWidth != null ? BoxConstraints(maxWidth: maxWidth) : const BoxConstraints(),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: (bg ?? const Color(0x1A5B53D6)),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        text,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: 12, color: fg ?? const Color(0xFF5B53D6), fontWeight: FontWeight.w700),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF5B53D6);
+    final maxChipW = MediaQuery.of(context).size.width * .55;
 
     Color _colorFor(int i) {
-      if (!revealed && selected == i) return const Color(0xFFEDEBFF); // preselección
-      if (revealed && i == q.correctIndex) return const Color(0xFFDFF5E2);   // correcto
-      if (revealed && selected == i && i != q.correctIndex) return const Color(0xFFFFE5E5); // incorrecto
+      if (!revealed && selected == i) return const Color(0xFFEDEBFF);
+      if (revealed && i == q.correctIndex) return const Color(0xFFDFF5E2);
+      if (revealed && selected == i && i != q.correctIndex) return const Color(0xFFFFE5E5);
       return Colors.white;
     }
 
     Color _borderFor(int i) {
-      if (!revealed && selected == i) return primary.withOpacity(.6); // borde en preselección
+      if (!revealed && selected == i) return primary.withOpacity(.6);
       if (revealed && i == q.correctIndex) return const Color(0xFF5DBB63);
       if (revealed && selected == i && i != q.correctIndex) return const Color(0xFFE57373);
       return const Color(0xFFF0ECE4);
@@ -565,29 +609,18 @@ class _QuestionCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // meta (categoría/dificultad)
+            // meta (categoría/dificultad) — con elipsis para no invadir la derecha
             Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: primary.withOpacity(.10),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Text(q.category, style: const TextStyle(fontSize: 12, color: primary, fontWeight: FontWeight.w700)),
-                ),
+                Flexible(child: _chip(q.category, maxWidth: maxChipW)),
                 const SizedBox(width: 8),
                 if (q.difficulty != null)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withOpacity(.06),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(q.difficulty!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-                  ),
+                  _chip(q.difficulty!, bg: Colors.black.withOpacity(.06), fg: Colors.black87),
                 const Spacer(),
-                Text('${index + 1}/$total', style: TextStyle(color: Colors.black.withOpacity(.6), fontWeight: FontWeight.w700)),
+                Text(
+                  '${index + 1}/$total',
+                  style: TextStyle(color: Colors.black.withOpacity(.6), fontWeight: FontWeight.w700),
+                ),
               ],
             ),
             const SizedBox(height: 12),
@@ -656,6 +689,7 @@ class _ErrorCard extends StatelessWidget {
               onPressed: onRetry,
               style: ElevatedButton.styleFrom(
                 backgroundColor: primary,
+                foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: const Text('Reintentar'),
@@ -687,7 +721,10 @@ class _SkeletonQuestionCard extends StatelessWidget {
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [bar(240), bar(180), bar(220), bar(200), bar(160)]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [bar(240), bar(180), bar(220), bar(200), bar(160)],
+        ),
       ),
     );
   }
@@ -699,6 +736,7 @@ class _DecorBackground extends StatelessWidget {
   @override
   Widget build(BuildContext context) => CustomPaint(painter: _BgPainter(), child: Container());
 }
+
 class _BgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
@@ -706,7 +744,8 @@ class _BgPainter extends CustomPainter {
     final paint = Paint()
       ..shader = const LinearGradient(
         colors: [Color(0xFFFDFBF6), Color(0xFFFBF7EF)],
-        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+        begin: Alignment.topCenter,
+        end: Alignment.bottomCenter,
       ).createShader(rect);
     canvas.drawRect(rect, paint);
     void blob(Offset c, double r, Color color) {
@@ -717,6 +756,7 @@ class _BgPainter extends CustomPainter {
     blob(Offset(size.width * .92, size.height * .90), 120, const Color(0xFF5B53D6));
     blob(Offset(size.width * .8, 100), 80, const Color(0xFF7C75F0));
   }
+
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

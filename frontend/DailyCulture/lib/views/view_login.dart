@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 
 import 'view_home.dart';
 import 'view_signup.dart';
@@ -15,9 +16,18 @@ class LoginView extends StatefulWidget {
 }
 
 class _LoginViewState extends State<LoginView> {
-  // API base
-  static const _loginUrl =
-      'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net/auth/login';
+  // ========= BASE URL =========
+  // Prioriza --dart-define=API_BASE=...
+  String get _apiBase {
+    const fromEnv = String.fromEnvironment('API_BASE');
+    if (fromEnv.isNotEmpty) return fromEnv;
+
+    if (kIsWeb) return 'http://localhost:8000';
+    if (defaultTargetPlatform == TargetPlatform.android) return 'http://10.0.2.2:8000';
+    return 'http://127.0.0.1:8000';
+  }
+
+  String get _loginUrl => '$_apiBase/auth/login';
 
   final _formKey = GlobalKey<FormState>();
   final _userCtrl = TextEditingController();
@@ -57,7 +67,6 @@ class _LoginViewState extends State<LoginView> {
         final token = data['access_token'] as String?;
         final user = (data['user'] ?? {}) as Map<String, dynamic>;
 
-        // username para el saludo en Home
         final username = (user['username'] ?? user['name'] ?? '').toString();
 
         if (token == null || token.isEmpty) {
@@ -67,7 +76,7 @@ class _LoginViewState extends State<LoginView> {
         // 1) Guarda token
         await _storage.write(key: 'access_token', value: token);
 
-        // 2) Normaliza y guarda el usuario en cache para ProfileView
+        // 2) Cache de usuario
         final normalizedUser = {
           'id':       (user['id'] ?? user['_id'] ?? user['uid'] ?? user['sub'] ?? '—').toString(),
           'email':    (user['email'] ?? '').toString(),
@@ -80,23 +89,17 @@ class _LoginViewState extends State<LoginView> {
         };
         try {
           await _storage.write(key: 'user_cache', value: jsonEncode(normalizedUser));
-        } catch (_) {
-          // ignoramos si no se puede serializar
-        }
+        } catch (_) {}
 
         if (!mounted) return;
-        // 3) Navega a HomeView
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
-            builder: (_) => HomeView(
-              username: username,
-            ),
+            builder: (_) => HomeView(username: username),
           ),
         );
         return;
       }
 
-      // muestra mensaje de error legible
       String msg = 'Error ${res.statusCode}';
       try {
         final body = jsonDecode(res.body);
@@ -247,7 +250,7 @@ class _LoginViewState extends State<LoginView> {
   }
 }
 
-/* ---------- helpers visuales (idénticos a tu código) ---------- */
+/* ---------- helpers visuales ---------- */
 class _LogoBannerFullWidth extends StatelessWidget {
   const _LogoBannerFullWidth({required this.width});
   final double width;

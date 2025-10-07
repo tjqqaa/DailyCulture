@@ -6,8 +6,14 @@ import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../models/user.dart';
-import '../models/points.dart'; // <<< añade el modelo de puntos
+import '../models/points.dart';
 import 'view_login.dart';
+
+// <<< Lee la base de la API desde --dart-define=API_BASE=...
+const String kApiBase = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'http://127.0.0.1:8000',
+);
 
 class ProfileView extends StatefulWidget {
   const ProfileView({
@@ -24,10 +30,8 @@ class ProfileView extends StatefulWidget {
 }
 
 class _ProfileViewState extends State<ProfileView> {
-  static const _base = 'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net';
-  static const _candidateMePaths = <String>[
-    '/auth/me','/users/me','/auth/user','/auth/profile','/users/profile'
-  ];
+  // Endpoints compatibles con tu backend FastAPI local
+  static const _candidateMePaths = <String>['/auth/me'];
 
   final _storage = const FlutterSecureStorage();
 
@@ -43,7 +47,7 @@ class _ProfileViewState extends State<ProfileView> {
     super.initState();
     _hydrateFromCacheOrClaims();
     _fetchProfile();
-    _fetchPoints(); // <<< carga los puntos también
+    _fetchPoints();
   }
 
   /* ======================= Hydration local ======================= */
@@ -63,8 +67,10 @@ class _ProfileViewState extends State<ProfileView> {
         final claims = _decodeJwtClaims(token);
         if (claims.isNotEmpty) {
           final normalized = _normalizeToUserMapFromAny(claims);
-          final u = _safeBuildUser(normalized,
-              usernameFallback: widget.username ?? _user?.username ?? 'usuario');
+          final u = _safeBuildUser(
+            normalized,
+            usernameFallback: widget.username ?? _user?.username ?? 'usuario',
+          );
           setState(() => _user = u);
         }
       }
@@ -86,6 +92,12 @@ class _ProfileViewState extends State<ProfileView> {
 
   /* ======================== Fetch remoto ========================= */
 
+  Uri _apiUri(String path) {
+    final base = kApiBase.endsWith('/') ? kApiBase.substring(0, kApiBase.length - 1) : kApiBase;
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
+
   Future<void> _fetchProfile() async {
     setState(() => _loading = true);
     try {
@@ -96,10 +108,13 @@ class _ProfileViewState extends State<ProfileView> {
       }
       http.Response? ok;
       for (final path in _candidateMePaths) {
-        final res = await http.get(Uri.parse('$_base$path'), headers: {
-          HttpHeaders.acceptHeader: 'application/json',
-          HttpHeaders.authorizationHeader: 'Bearer $token',
-        });
+        final res = await http.get(
+          _apiUri(path),
+          headers: {
+            HttpHeaders.acceptHeader: 'application/json',
+            HttpHeaders.authorizationHeader: 'Bearer $token',
+          },
+        );
         if (res.statusCode == 200) { ok = res; break; }
         if (res.statusCode == 401) { await _doLogout(); return; }
       }
@@ -107,14 +122,19 @@ class _ProfileViewState extends State<ProfileView> {
         final body = jsonDecode(ok.body);
         Map<String, dynamic> rawUser = {};
         if (body is Map<String, dynamic>) {
-          if (body['user'] is Map) rawUser = (body['user'] as Map).cast<String, dynamic>();
-          else if (body['data'] is Map && (body['data'] as Map)['user'] is Map) {
+          if (body['user'] is Map) {
+            rawUser = (body['user'] as Map).cast<String, dynamic>();
+          } else if (body['data'] is Map && (body['data'] as Map)['user'] is Map) {
             rawUser = ((body['data'] as Map)['user'] as Map).cast<String, dynamic>();
-          } else { rawUser = body; }
+          } else {
+            rawUser = body;
+          }
         }
         final normalized = _normalizeToUserMapFromAny(rawUser);
-        final fresh = _safeBuildUser(normalized,
-            usernameFallback: _user?.username ?? widget.username ?? 'usuario');
+        final fresh = _safeBuildUser(
+          normalized,
+          usernameFallback: _user?.username ?? widget.username ?? 'usuario',
+        );
         setState(() => _user = fresh);
         await _storage.write(key: 'user_cache', value: jsonEncode(fresh.toMap()));
       }
@@ -134,11 +154,13 @@ class _ProfileViewState extends State<ProfileView> {
         await _doLogout();
         return;
       }
-      final uri = Uri.parse('$_base/points/me');
-      final res = await http.get(uri, headers: {
-        HttpHeaders.acceptHeader: 'application/json',
-        HttpHeaders.authorizationHeader: 'Bearer $token',
-      });
+      final res = await http.get(
+        _apiUri('/points/me'),
+        headers: {
+          HttpHeaders.acceptHeader: 'application/json',
+          HttpHeaders.authorizationHeader: 'Bearer $token',
+        },
+      );
 
       if (res.statusCode == 200) {
         final map = jsonDecode(res.body);
@@ -148,10 +170,6 @@ class _ProfileViewState extends State<ProfileView> {
       } else if (res.statusCode == 401) {
         await _doLogout();
         return;
-      } else {
-        // opcional: mostrar snackbar de error suave
-        // if (mounted) ScaffoldMessenger.of(context)
-        //   .showSnackBar(SnackBar(content: Text('No se pudieron cargar los puntos (${res.statusCode}).')));
       }
     } catch (_) {
       // silencio
@@ -270,10 +288,7 @@ class _ProfileViewState extends State<ProfileView> {
   }
 
   Future<void> _refreshAll() async {
-    await Future.wait([
-      _fetchProfile(),
-      _fetchPoints(),
-    ]);
+    await Future.wait([_fetchProfile(), _fetchPoints()]);
   }
 
   @override
@@ -294,7 +309,7 @@ class _ProfileViewState extends State<ProfileView> {
           SafeArea(
             child: RefreshIndicator(
               color: primary,
-              onRefresh: _refreshAll, // <<< refresca perfil + puntos
+              onRefresh: _refreshAll,
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
@@ -397,7 +412,7 @@ class _ProfileViewState extends State<ProfileView> {
                                 ),
                                 const SizedBox(height: 16),
                                 _InfoRow(label: 'Email', value: u.email),
-                                _InfoRow(label: 'Puntos', value: pointsText), // <<< PUNTOS
+                                _InfoRow(label: 'Puntos', value: pointsText),
                                 _InfoRow(label: 'Creado el', value: _prettyDate(u.createdAt), isLast: true),
                               ],
                             ),
@@ -479,7 +494,7 @@ class _SkeletonProfile extends StatelessWidget {
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [bar(160), bar(90)])),
         ]),
         const SizedBox(height: 16),
-        bar(180), bar(160), // email / puntos skeleton
+        bar(180), bar(160),
       ],
     );
   }
