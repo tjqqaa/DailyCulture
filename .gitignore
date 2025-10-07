@@ -1,0 +1,6 @@
+
+# Local DB
+backend/data/*.db
+backend/data/*.sqlite
+backend/data/*.sqlite3
+backend/data/
