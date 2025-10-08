@@ -1,4 +1,7 @@
+// lib/views/view_signup.dart
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -18,19 +21,12 @@ class _SignUpViewState extends State<SignUpView> {
   final _emailCtrl = TextEditingController();
   final _userCtrl = TextEditingController();
   final _fullNameCtrl = TextEditingController();
-  final _passCtrl = TextEditingController(); // backend hashea
+  final _passCtrl = TextEditingController(); // el backend lo hashea
 
   bool _obscurePass = true;
   bool _loading = false;
 
   final _storage = const FlutterSecureStorage();
-
-  // Puedes sobreescribirla con --dart-define=API_BASE_URL=...
-  static const String _baseUrl = String.fromEnvironment(
-    'API_BASE_URL',
-    defaultValue:
-    'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net',
-  );
 
   @override
   void dispose() {
@@ -41,6 +37,31 @@ class _SignUpViewState extends State<SignUpView> {
     super.dispose();
   }
 
+  // ====== BASE URL sin archivo externo ======
+  // 1) Se puede sobreescribir con --dart-define=API_BASE=http://IP:PUERTO
+  // 2) Si no, decide por plataforma:
+  //    - Web / iOS sim / Desktop:  http://127.0.0.1:8000
+  //    - Android emulator:         http://10.0.2.2:8000
+  static const String _apiBaseOverride =
+  String.fromEnvironment('API_BASE', defaultValue: '');
+  String get _apiBase {
+    if (_apiBaseOverride.isNotEmpty) return _apiBaseOverride;
+    if (kIsWeb) return 'http://127.0.0.1:8000';
+    try {
+      if (Platform.isAndroid) return 'http://10.0.2.2:8000';
+    } catch (_) {
+      // ignore: platform may not be available (tests, etc.)
+    }
+    return 'http://127.0.0.1:8000';
+  }
+
+  Uri _apiUri(String path) {
+    final base =
+    _apiBase.endsWith('/') ? _apiBase.substring(0, _apiBase.length - 1) : _apiBase;
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
+
   static const _usernameRegex = r'^[a-zA-Z0-9._-]{3,30}$';
 
   Future<void> _onSignUp() async {
@@ -49,24 +70,21 @@ class _SignUpViewState extends State<SignUpView> {
     setState(() => _loading = true);
     try {
       // 1) Crear usuario
-      final createUri = Uri.parse('$_baseUrl/users');
-      final createBody = jsonEncode({
-        'email': _emailCtrl.text.trim(),
-        'username': _userCtrl.text.trim(),
-        if (_fullNameCtrl.text.trim().isNotEmpty)
-          'full_name': _fullNameCtrl.text.trim(),
-        'is_active': true,
-        'password': _passCtrl.text,
-      });
-
       final res = await http
           .post(
-        createUri,
+        _apiUri('/users'),
         headers: const {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
-        body: createBody,
+        body: jsonEncode({
+          'email': _emailCtrl.text.trim(),
+          'username': _userCtrl.text.trim(),
+          if (_fullNameCtrl.text.trim().isNotEmpty)
+            'full_name': _fullNameCtrl.text.trim(),
+          'is_active': true,
+          'password': _passCtrl.text,
+        }),
       )
           .timeout(const Duration(seconds: 20));
 
@@ -82,15 +100,15 @@ class _SignUpViewState extends State<SignUpView> {
       }
 
       // 2) Login automático para obtener token
-      final loginUri = Uri.parse('$_baseUrl/auth/login');
       final loginRes = await http.post(
-        loginUri,
+        _apiUri('/auth/login'),
         headers: const {
           'Content-Type': 'application/json',
           'Accept': 'application/json',
         },
         body: jsonEncode({
-          'username': _userCtrl.text.trim(), // tu API acepta username o email
+          // tu API acepta username o email en este campo
+          'username': _userCtrl.text.trim(),
           'password': _passCtrl.text,
         }),
       );
@@ -107,13 +125,14 @@ class _SignUpViewState extends State<SignUpView> {
       final loginData = jsonDecode(loginRes.body) as Map<String, dynamic>;
       final token = loginData['access_token'] as String?;
       final user = (loginData['user'] ?? {}) as Map<String, dynamic>;
-      final username = (user['username'] ?? '') as String;
+      final username = (user['username'] ?? _userCtrl.text.trim()).toString();
 
-      if (token == null) {
+      if (token == null || token.isEmpty) {
         throw Exception('Respuesta de login sin access_token');
       }
 
       await _storage.write(key: 'access_token', value: token);
+      await _storage.write(key: 'user_cache', value: jsonEncode(user));
 
       if (!mounted) return;
       // 3) Navegar a HomeView
@@ -123,7 +142,10 @@ class _SignUpViewState extends State<SignUpView> {
             username: username,
             onSignOut: () async {
               await _storage.delete(key: 'access_token');
-              if (context.mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+              await _storage.delete(key: 'user_cache');
+              if (context.mounted) {
+                Navigator.of(context).popUntil((r) => r.isFirst);
+              }
             },
           ),
         ),
@@ -286,7 +308,7 @@ class _SignUpViewState extends State<SignUpView> {
   }
 }
 
-// ---- UI helpers (igual que antes)
+// ---- UI helpers
 class _LogoBannerFullWidth extends StatelessWidget {
   const _LogoBannerFullWidth({required this.width});
   final double width;

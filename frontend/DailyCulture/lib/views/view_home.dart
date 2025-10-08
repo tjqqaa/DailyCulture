@@ -5,7 +5,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'view_login.dart';     // para navegar al login al hacer logout
 import 'view_profile.dart';   // tab de Perfil
 import 'view_quiz.dart';      // vista de Trivia
-import 'view_friends.dart';   // << NUEVO: vista de Amigos
+import 'view_friends.dart';   // vista de Amigos
 
 class HomeView extends StatefulWidget {
   const HomeView({
@@ -77,7 +77,8 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Inicio'),
-          NavigationDestination(icon: Icon(Icons.explore_outlined), selectedIcon: Icon(Icons.explore), label: 'Explorar'),
+          // 👇 Reemplazado: antes "Explorar", ahora "Amigos"
+          NavigationDestination(icon: Icon(Icons.group_outlined), selectedIcon: Icon(Icons.group), label: 'Amigos'),
           NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Perfil'),
         ],
       ),
@@ -125,7 +126,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         }),
                         const SizedBox(height: 12),
 
-                        // --------- NUEVO: Amigos (botón abajo) ----------
+                        // --------- Acceso rápido a Amigos ----------
                         _FriendsCard(onTap: () {
                           Navigator.push(
                             context,
@@ -152,14 +153,8 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
         );
 
       case 1:
-        return ListView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
-          children: const [
-            _SectionTitle(text: 'Explorar'),
-            SizedBox(height: 12),
-            _ExploreCard(),
-          ],
-        );
+      // 👇 El tab 2 ahora muestra directamente la vista de Amigos
+        return const FriendsView();
 
       case 2:
       // Tab de perfil — recibe el logout local

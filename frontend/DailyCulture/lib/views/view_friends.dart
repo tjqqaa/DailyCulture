@@ -1,5 +1,7 @@
 // lib/views/view_friends.dart
 import 'dart:convert';
+import 'dart:io' show Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -14,7 +16,22 @@ class FriendsView extends StatefulWidget {
 }
 
 class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStateMixin {
-  static const _base = 'https://dailyculture-bpdmbwahh5axdcd0.spaincentral-01.azurewebsites.net';
+  // ==== BASE URL sin archivo externo ====
+  static const String _apiBaseOverride = String.fromEnvironment('API_BASE', defaultValue: '');
+  String get _apiBase {
+    if (_apiBaseOverride.isNotEmpty) return _apiBaseOverride;
+    if (kIsWeb) return 'http://127.0.0.1:8000';
+    try {
+      if (Platform.isAndroid) return 'http://10.0.2.2:8000';
+    } catch (_) {}
+    return 'http://127.0.0.1:8000';
+  }
+  Uri _apiUri(String path) {
+    final base = _apiBase.endsWith('/') ? _apiBase.substring(0, _apiBase.length - 1) : _apiBase;
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p');
+  }
+
   static const _bg = Color(0xFFFBF7EF);
   static const _primary = Color(0xFF5B53D6);
 
@@ -105,13 +122,12 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
   Future<void> _fetchFriends() async {
     setState(() => _loadingFriends = true);
     try {
-      final res = await http.get(Uri.parse('$_base/friends'), headers: _authHeaders());
+      final res = await http.get(_apiUri('/friends'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final list = (jsonDecode(res.body) as List).cast<Map>().toList();
       final friends = list.map((m) => _UserBrief.fromJson(Map<String, dynamic>.from(m))).toList();
 
-      // Actualiza lista y cache
       setState(() {
         _friends = friends;
         for (final u in friends) {
@@ -128,7 +144,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
   Future<void> _fetchRequests() async {
     setState(() => _loadingReqs = true);
     try {
-      final res = await http.get(Uri.parse('$_base/friends/requests'), headers: _authHeaders());
+      final res = await http.get(_apiUri('/friends/requests'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final body = jsonDecode(res.body) as Map<String, dynamic>;
@@ -161,22 +177,17 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
   Future<void> _fetchLeaderboard() async {
     setState(() => _loadingLeader = true);
     try {
-      final res = await http.get(Uri.parse('$_base/points/leaderboard/friends?limit=100'), headers: _authHeaders());
+      final res = await http.get(_apiUri('/points/leaderboard/friends?limit=100'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       final list = (jsonDecode(res.body) as List).cast<Map>().toList();
       final rows = list.map((m) => _LeaderRow.fromJson(Map<String, dynamic>.from(m))).toList();
 
-      // Cachea también usuarios del ranking (por si aparecen en solicitudes)
       for (final r in rows) {
-        if (!_userCache.containsKey(r.userId)) {
-          _userCache[r.userId] = _UserBrief(
-            id: r.userId,
-            email: '', // desconocido aquí
-            username: r.username,
-            fullName: r.fullName,
-          );
-        }
+        _userCache.putIfAbsent(
+          r.userId,
+              () => _UserBrief(id: r.userId, email: '', username: r.username, fullName: r.fullName),
+        );
       }
 
       setState(() => _leader = rows);
@@ -195,7 +206,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
     }
     try {
       final res = await http.post(
-        Uri.parse('$_base/friends/request'),
+        _apiUri('/friends/request'),
         headers: _authHeaders(),
         body: jsonEncode({'to_username': uname}),
       );
@@ -219,10 +230,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
 
   Future<void> _accept(String otherUserId) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_base/friends/$otherUserId/accept'),
-        headers: _authHeaders(),
-      );
+      final res = await http.post(_apiUri('/friends/$otherUserId/accept'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Solicitud aceptada')));
@@ -234,10 +242,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
 
   Future<void> _decline(String otherUserId) async {
     try {
-      final res = await http.post(
-        Uri.parse('$_base/friends/$otherUserId/decline'),
-        headers: _authHeaders(),
-      );
+      final res = await http.post(_apiUri('/friends/$otherUserId/decline'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Solicitud rechazada')));
@@ -249,10 +254,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
 
   Future<void> _remove(String otherUserId) async {
     try {
-      final res = await http.delete(
-        Uri.parse('$_base/friends/$otherUserId'),
-        headers: _authHeaders(),
-      );
+      final res = await http.delete(_apiUri('/friends/$otherUserId'), headers: _authHeaders());
       if (res.statusCode == 401) { _toLogin(); return; }
       if (res.statusCode != 204 && res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Amistad eliminada')));
@@ -271,13 +273,12 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
 
     try {
       await Future.wait(ids.map((id) async {
-        final res = await http.get(Uri.parse('$_base/users/$id'), headers: _authHeaders());
+        final res = await http.get(_apiUri('/users/$id'), headers: _authHeaders());
         if (res.statusCode == 200) {
           final m = jsonDecode(res.body) as Map<String, dynamic>;
           final u = _UserBrief.fromJson(m);
           _userCache[id] = u;
         }
-        // si no es 200, ignoramos (mostrará id como fallback)
       }));
       if (mounted) setState(() {}); // refresca nombres en UI
     } catch (_) {
@@ -297,10 +298,8 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
     if (id == _myId) return 'Tú';
     final u = _userCache[id];
     if (u != null) {
-      // muestra @username si no hay full_name o prefieres handle
       return u.displayName.startsWith('@') ? u.displayName : '@${u.username}';
     }
-    // fallback si aún no se resolvió
     return id;
   }
 
@@ -400,7 +399,7 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
                           ],
                         ),
                         SizedBox(
-                          height: 560, // espacio scrollable interno
+                          height: 560,
                           child: TabBarView(
                             controller: _tabs,
                             children: [
@@ -460,7 +459,6 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
                 icon: const Icon(Icons.person_add_alt_1_rounded),
                 label: const Text('Enviar'),
               ),
-
             ],
           ),
           const SizedBox(height: 16),

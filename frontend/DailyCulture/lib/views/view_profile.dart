@@ -1,6 +1,7 @@
 // lib/views/view_profile.dart
 import 'dart:convert';
-import 'dart:io';
+import 'dart:io' show HttpHeaders, Platform;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -8,12 +9,6 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../models/user.dart';
 import '../models/points.dart';
 import 'view_login.dart';
-
-// <<< Lee la base de la API desde --dart-define=API_BASE=...
-const String kApiBase = String.fromEnvironment(
-  'API_BASE',
-  defaultValue: 'http://127.0.0.1:8000',
-);
 
 class ProfileView extends StatefulWidget {
   const ProfileView({
@@ -30,13 +25,32 @@ class ProfileView extends StatefulWidget {
 }
 
 class _ProfileViewState extends State<ProfileView> {
-  // Endpoints compatibles con tu backend FastAPI local
-  static const _candidateMePaths = <String>['/auth/me'];
+  // ===== BASE URL igual que en FriendsView =====
+  static const String _apiBaseOverride = String.fromEnvironment('API_BASE', defaultValue: '');
+  String get _apiBase {
+    if (_apiBaseOverride.isNotEmpty) return _apiBaseOverride;
+    if (kIsWeb) return 'http://127.0.0.1:8000';
+    try {
+      if (Platform.isAndroid) return 'http://10.0.2.2:8000';
+    } catch (_) {}
+    return 'http://127.0.0.1:8000';
+  }
+  Uri _apiUri(String path, [Map<String, String>? q]) {
+    final base = _apiBase.endsWith('/') ? _apiBase.substring(0, _apiBase.length - 1) : _apiBase;
+    final p = path.startsWith('/') ? path : '/$path';
+    return Uri.parse('$base$p').replace(queryParameters: q);
+  }
+
+  static const _candidateMePaths = <String>['/auth/me', '/users/me', '/auth/user'];
 
   final _storage = const FlutterSecureStorage();
 
   bool _loading = false;
   User? _user;
+
+  // auth actual
+  String? _token;
+  String? _myId; // sub del JWT
 
   // --- puntos ---
   bool _loadingPoints = false;
@@ -45,9 +59,26 @@ class _ProfileViewState extends State<ProfileView> {
   @override
   void initState() {
     super.initState();
-    _hydrateFromCacheOrClaims();
-    _fetchProfile();
-    _fetchPoints();
+    _bootstrap(); // secuencial
+  }
+
+  Future<void> _bootstrap() async {
+    // 1) Carga token y claims
+    _token = await _storage.read(key: 'access_token');
+    if (_token == null || _token!.isEmpty) {
+      await _doLogout();
+      return;
+    }
+    _myId = _decodeSub(_token!);
+
+    // 2) Hidrata desde cache/claims para tener username visible
+    await _hydrateFromCacheOrClaims();
+
+    // 3) Pide perfil al backend
+    await _fetchProfile();
+
+    // 4) Pide puntos "como Friends": del leaderboard de amigos
+    await _fetchPointsFromFriendsLeaderboard();
   }
 
   /* ======================= Hydration local ======================= */
@@ -62,7 +93,7 @@ class _ProfileViewState extends State<ProfileView> {
     }
 
     if (_user == null || _isIncomplete(_user!)) {
-      final token = await _storage.read(key: 'access_token');
+      final token = _token;
       if (token != null && token.isNotEmpty) {
         final claims = _decodeJwtClaims(token);
         if (claims.isNotEmpty) {
@@ -92,29 +123,18 @@ class _ProfileViewState extends State<ProfileView> {
 
   /* ======================== Fetch remoto ========================= */
 
-  Uri _apiUri(String path) {
-    final base = kApiBase.endsWith('/') ? kApiBase.substring(0, kApiBase.length - 1) : kApiBase;
-    final p = path.startsWith('/') ? path : '/$path';
-    return Uri.parse('$base$p');
-  }
+  Map<String, String> _headers(String token) => {
+    HttpHeaders.acceptHeader: 'application/json',
+    HttpHeaders.authorizationHeader: 'Bearer $token',
+  };
 
   Future<void> _fetchProfile() async {
     setState(() => _loading = true);
     try {
-      final token = await _storage.read(key: 'access_token');
-      if (token == null || token.isEmpty) {
-        await _doLogout();
-        return;
-      }
+      final token = _token!;
       http.Response? ok;
       for (final path in _candidateMePaths) {
-        final res = await http.get(
-          _apiUri(path),
-          headers: {
-            HttpHeaders.acceptHeader: 'application/json',
-            HttpHeaders.authorizationHeader: 'Bearer $token',
-          },
-        );
+        final res = await http.get(_apiUri(path), headers: _headers(token));
         if (res.statusCode == 200) { ok = res; break; }
         if (res.statusCode == 401) { await _doLogout(); return; }
       }
@@ -145,34 +165,65 @@ class _ProfileViewState extends State<ProfileView> {
     }
   }
 
-  // --- GET /points/me ---
-  Future<void> _fetchPoints() async {
+  /* ====================== PUNTOS (como Friends) ====================== */
+
+  Future<void> _fetchPointsFromFriendsLeaderboard() async {
     setState(() => _loadingPoints = true);
     try {
-      final token = await _storage.read(key: 'access_token');
-      if (token == null || token.isEmpty) {
-        await _doLogout();
+      final token = _token!;
+      final meId = _myId; // sub del JWT
+      if (meId == null || meId.isEmpty) {
+        setState(() => _points = Points.fromJson({'total': 0}));
         return;
       }
+
       final res = await http.get(
-        _apiUri('/points/me'),
-        headers: {
-          HttpHeaders.acceptHeader: 'application/json',
-          HttpHeaders.authorizationHeader: 'Bearer $token',
-        },
+        _apiUri('/points/leaderboard/friends', {'limit': '100'}),
+        headers: _headers(token),
       );
 
-      if (res.statusCode == 200) {
-        final map = jsonDecode(res.body);
-        if (map is Map<String, dynamic>) {
-          setState(() => _points = Points.fromJson(map));
-        }
-      } else if (res.statusCode == 401) {
-        await _doLogout();
+      if (res.statusCode == 401) { await _doLogout(); return; }
+      if (res.statusCode != 200) {
+        // Último recurso: deja 0
+        setState(() => _points = Points.fromJson({'total': 0}));
         return;
       }
+
+      final list = (jsonDecode(res.body) as List).cast<Map>().toList();
+
+      int total = 0;
+      bool found = false;
+
+      // Prioridad 1: user_id == sub (igual que FriendsView)
+      for (final raw in list) {
+        final m = Map<String, dynamic>.from(raw);
+        final uid = (m['user_id'] ?? m['id'] ?? '').toString();
+        if (uid == meId) {
+          final p = m['points'];
+          if (p is num) { total = p.toInt(); found = true; }
+          break;
+        }
+      }
+
+      // Prioridad 2: por username (por si el backend no devuelve tu id)
+      if (!found) {
+        final myU = (_user?.username ?? '').toLowerCase();
+        if (myU.isNotEmpty) {
+          for (final raw in list) {
+            final m = Map<String, dynamic>.from(raw);
+            final uname = (m['username'] ?? '').toString().toLowerCase();
+            if (uname == myU) {
+              final p = m['points'];
+              if (p is num) { total = p.toInt(); found = true; }
+              break;
+            }
+          }
+        }
+      }
+
+      setState(() => _points = Points.fromJson({'total': total}));
     } catch (_) {
-      // silencio
+      setState(() => _points = Points.fromJson({'total': 0}));
     } finally {
       if (mounted) setState(() => _loadingPoints = false);
     }
@@ -247,6 +298,12 @@ class _ProfileViewState extends State<ProfileView> {
     } catch (_) { return {}; }
   }
 
+  String? _decodeSub(String token) {
+    final c = _decodeJwtClaims(token);
+    final sub = c['sub'];
+    return sub == null ? null : sub.toString();
+  }
+
   String _base64UrlDecode(String input) {
     var out = input.replaceAll('-', '+').replaceAll('_', '/');
     while (out.length % 4 != 0) { out += '='; }
@@ -269,9 +326,7 @@ class _ProfileViewState extends State<ProfileView> {
   /* ============================ UI ============================ */
 
   String _displayName(User u) =>
-      (u.fullName != null && u.fullName!.trim().isNotEmpty)
-          ? u.fullName!.trim()
-          : '@${u.username}';
+      (u.fullName != null && u.fullName!.trim().isNotEmpty) ? u.fullName!.trim() : '@${u.username}';
 
   String _initials(String display) {
     final p = display.trim().replaceAll('@', '').split(RegExp(r'\s+'));
@@ -288,7 +343,9 @@ class _ProfileViewState extends State<ProfileView> {
   }
 
   Future<void> _refreshAll() async {
-    await Future.wait([_fetchProfile(), _fetchPoints()]);
+    // mantener orden para que el username esté fresco antes de buscar puntos
+    await _fetchProfile();
+    await _fetchPointsFromFriendsLeaderboard();
   }
 
   @override
@@ -297,9 +354,7 @@ class _ProfileViewState extends State<ProfileView> {
     const bg = Color(0xFFFBF7EF);
     final u = _user;
 
-    final pointsText = _points == null
-        ? (_loadingPoints ? 'Cargando…' : '—')
-        : '${_points!.total}';
+    final pointsText = _loadingPoints ? 'Cargando…' : '${_points?.total ?? 0}';
 
     return Scaffold(
       backgroundColor: bg,
@@ -319,7 +374,7 @@ class _ProfileViewState extends State<ProfileView> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // -------- Header --------
+                        // Header
                         Container(
                           padding: const EdgeInsets.all(18),
                           decoration: BoxDecoration(
@@ -351,12 +406,10 @@ class _ProfileViewState extends State<ProfileView> {
                                           color: Colors.white, fontWeight: FontWeight.w900, height: 1.05, letterSpacing: .2,
                                         )),
                                     const SizedBox(height: 6),
-                                    Text(
-                                      u == null ? 'Cargando…' : _displayName(u),
-                                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                        color: Colors.white.withOpacity(.95), fontWeight: FontWeight.w700,
-                                      ),
-                                    ),
+                                    Text(u == null ? 'Cargando…' : _displayName(u),
+                                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                          color: Colors.white.withOpacity(.95), fontWeight: FontWeight.w700,
+                                        )),
                                   ],
                                 ),
                               ),
@@ -372,7 +425,7 @@ class _ProfileViewState extends State<ProfileView> {
                         ),
                         const SizedBox(height: 18),
 
-                        // -------- Card info (incluye Puntos) --------
+                        // Card info
                         Card(
                           elevation: 10,
                           shadowColor: Colors.black12,
@@ -420,7 +473,7 @@ class _ProfileViewState extends State<ProfileView> {
                         ),
                         const SizedBox(height: 18),
 
-                        // -------- Logout --------
+                        // Logout
                         SizedBox(
                           width: double.infinity,
                           height: 52,
