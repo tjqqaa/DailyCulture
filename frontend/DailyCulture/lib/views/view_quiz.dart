@@ -50,12 +50,15 @@ class _QuizViewState extends State<QuizView> {
 
   bool _bonusSent = false;
 
+  // flag para no lanzar múltiples recargas de “resto de preguntas”
+  bool _refilling = false;
+
   @override
   void initState() {
     super.initState();
     _selectedCategoryId = widget.categoryId;
     _fetchCategories();
-    _fetchQuestions();
+    _fetchQuestions(); // carga inicial completa
   }
 
   /* ========================= Helpers API ========================= */
@@ -68,7 +71,6 @@ class _QuizViewState extends State<QuizView> {
           .replaceFirst('http://localhost', 'http://10.0.2.2')
           .replaceFirst('http://127.0.0.1', 'http://10.0.2.2');
     }
-    // quita / final
     if (base.endsWith('/')) base = base.substring(0, base.length - 1);
     return base;
   }
@@ -106,6 +108,53 @@ class _QuizViewState extends State<QuizView> {
     }
   }
 
+  List<_Q> _parseOpenTDB(List<Map> results) {
+    final rng = Random();
+    final parsed = <_Q>[];
+    for (final raw in results) {
+      final q = Uri.decodeComponent(raw['question'] as String);
+      final correct = Uri.decodeComponent(raw['correct_answer'] as String);
+      final incorrect = (raw['incorrect_answers'] as List)
+          .map((e) => Uri.decodeComponent(e as String))
+          .toList();
+
+      final options = List<String>.from(incorrect)..add(correct);
+      options.shuffle(rng);
+      final correctIdx = options.indexOf(correct);
+      parsed.add(_Q(
+        question: q,
+        options: options,
+        correctIndex: correctIdx,
+        category: Uri.decodeComponent(raw['category'] as String),
+        difficulty: (raw['difficulty'] as String?)?.toLowerCase(),
+      ));
+    }
+    return parsed;
+  }
+
+  Future<List<_Q>> _getQuestions({required int amount, int? categoryId}) async {
+    final params = <String, String>{
+      'amount': amount.toString(),
+      'type': 'multiple',
+      'encode': 'url3986',
+    };
+    if (categoryId != null) params['category'] = categoryId.toString();
+    if (widget.difficulty != null && widget.difficulty!.isNotEmpty) {
+      params['difficulty'] = widget.difficulty!;
+    }
+    final uri = Uri.https('opentdb.com', '/api.php', params);
+    final res = await http.get(uri, headers: {'Accept': 'application/json'});
+    if (res.statusCode != 200) {
+      throw Exception('HTTP ${res.statusCode}');
+    }
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    final code = (body['response_code'] ?? 1) as int;
+    if (code != 0) throw Exception('OpenTDB devolvió response_code=$code');
+    final results = (body['results'] as List).cast<Map>().toList();
+    return _parseOpenTDB(results);
+  }
+
+  /// Carga completa “desde cero”: resetea progreso (para botón Reiniciar/fin).
   Future<void> _fetchQuestions() async {
     setState(() {
       _loading = true;
@@ -119,49 +168,10 @@ class _QuizViewState extends State<QuizView> {
     });
 
     try {
-      final params = <String, String>{
-        'amount': widget.amount.toString(),
-        'type': 'multiple',
-        'encode': 'url3986',
-      };
-
-      final effectiveCat = _selectedCategoryId ?? widget.categoryId;
-      if (effectiveCat != null) params['category'] = effectiveCat.toString();
-      if (widget.difficulty != null && widget.difficulty!.isNotEmpty) {
-        params['difficulty'] = widget.difficulty!;
-      }
-
-      final uri = Uri.https('opentdb.com', '/api.php', params);
-      final res = await http.get(uri, headers: {'Accept': 'application/json'});
-      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
-
-      final body = jsonDecode(res.body) as Map<String, dynamic>;
-      final code = (body['response_code'] ?? 1) as int;
-      if (code != 0) throw Exception('OpenTDB devolvió response_code=$code');
-
-      final results = (body['results'] as List).cast<Map>().toList();
-      final rng = Random();
-      final parsed = <_Q>[];
-
-      for (final raw in results) {
-        final q = Uri.decodeComponent(raw['question'] as String);
-        final correct = Uri.decodeComponent(raw['correct_answer'] as String);
-        final incorrect = (raw['incorrect_answers'] as List)
-            .map((e) => Uri.decodeComponent(e as String))
-            .toList();
-
-        final options = List<String>.from(incorrect)..add(correct);
-        options.shuffle(rng);
-        final correctIdx = options.indexOf(correct);
-        parsed.add(_Q(
-          question: q,
-          options: options,
-          correctIndex: correctIdx,
-          category: Uri.decodeComponent(raw['category'] as String),
-          difficulty: (raw['difficulty'] as String?)?.toLowerCase(),
-        ));
-      }
-
+      final parsed = await _getQuestions(
+        amount: widget.amount,
+        categoryId: _selectedCategoryId ?? widget.categoryId,
+      );
       if (!mounted) return;
       setState(() => _qs = parsed);
     } catch (e) {
@@ -169,6 +179,45 @@ class _QuizViewState extends State<QuizView> {
       setState(() => _error = 'No se pudieron cargar preguntas. $e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// **Nuevo**: al cambiar la categoría, NO resetea progreso.
+  /// Mantiene las preguntas ya vistas (incluida la actual) y
+  /// rellena el resto hasta `widget.amount` con la nueva categoría.
+  Future<void> _refillRemainingForCategory() async {
+    if (_refilling) return;
+    _refilling = true;
+    setState(() => _loadingCats = true);
+
+    try {
+      final keepCount = _qs.isEmpty ? 0 : (_index + 1); // mantiene hasta la actual incluida
+      final desiredTotal = widget.amount;
+      final need = (desiredTotal - keepCount);
+      if (need <= 0) {
+        // Nada que rellenar; solo aseguramos estado
+        setState(() {});
+        return;
+      }
+
+      final newOnes = await _getQuestions(
+        amount: need,
+        categoryId: _selectedCategoryId ?? widget.categoryId,
+      );
+
+      if (!mounted) return;
+      final prefix = _qs.take(keepCount).toList();
+      setState(() {
+        _qs = [...prefix, ...newOnes];
+        // Mantener: _index, _score, _selected, _revealed SIN cambios.
+        // Si quieres “des-seleccionar” al cambiar categoría, descomenta:
+        // _selected = null; _revealed = false;
+      });
+    } catch (_) {
+      // silencioso (mantenemos lo que ya había)
+    } finally {
+      _refilling = false;
+      if (mounted) setState(() => _loadingCats = false);
     }
   }
 
@@ -450,9 +499,10 @@ class _QuizViewState extends State<QuizView> {
                                       const DropdownMenuItem<int?>(value: null, child: Text('Todas las categorías')),
                                       ..._cats.map((c) => DropdownMenuItem<int?>(value: c.id, child: Text(c.name))),
                                     ],
-                                    onChanged: (v) {
+                                    onChanged: (v) async {
                                       setState(() => _selectedCategoryId = v);
-                                      _fetchQuestions();
+                                      // ¡Aquí el cambio! Mantiene progreso y solo repone las preguntas restantes
+                                      await _refillRemainingForCategory();
                                     },
                                   ),
                                 ),

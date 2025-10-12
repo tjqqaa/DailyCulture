@@ -2,16 +2,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-import 'view_login.dart';     // para navegar al login al hacer logout
-import 'view_profile.dart';   // tab de Perfil
-import 'view_quiz.dart';      // vista de Trivia
-import 'view_friends.dart';   // vista de Amigos
+import 'view_login.dart';
+import 'view_profile.dart';
+import 'view_quiz.dart';
+import 'view_friends.dart';
+import 'view_activities.dart'; // 👈 NUEVO: navegación a Actividades
+
+// Plan sugerido (BoredAPI + Wikipedia ES)
+import 'suggested_plan.dart';
 
 class HomeView extends StatefulWidget {
   const HomeView({
     super.key,
     this.username,
-    this.onSignOut, // (opcional, ya no lo usamos)
+    this.onSignOut,
   });
 
   final String? username;
@@ -25,7 +29,6 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
   int _tab = 0;
   late final AnimationController _ac;
 
-  // storage local para borrar token y navegar
   final _storage = const FlutterSecureStorage();
 
   @override
@@ -41,7 +44,6 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
     super.dispose();
   }
 
-  // logout seguro usando ESTE context (no el de LoginView)
   Future<void> _handleLogout() async {
     await _storage.delete(key: 'access_token');
     if (!mounted) return;
@@ -77,7 +79,6 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
         onDestinationSelected: (i) => setState(() => _tab = i),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Inicio'),
-          // 👇 Reemplazado: antes "Explorar", ahora "Amigos"
           NavigationDestination(icon: Icon(Icons.group_outlined), selectedIcon: Icon(Icons.group), label: 'Amigos'),
           NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Perfil'),
         ],
@@ -106,7 +107,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                           title: 'DailyCulture',
                           subtitle: hello,
                           date: today,
-                          onAvatarTap: _handleLogout, // ahora llama al logout local
+                          onAvatarTap: _handleLogout,
                         ),
                         const SizedBox(height: 18),
                         const _SectionTitle(text: 'Hoy'),
@@ -126,15 +127,22 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         }),
                         const SizedBox(height: 12),
 
-                        // --------- Acceso rápido a Amigos ----------
-                        _FriendsCard(onTap: () {
+                        // --------- NUEVO botón tipo "Amigos": ACTIVIDADES ----------
+                        _ActivitiesCard(onTap: () {
                           Navigator.push(
                             context,
-                            MaterialPageRoute(builder: (_) => const FriendsView()),
+                            MaterialPageRoute(builder: (_) => const ActivitiesView()),
                           );
                         }),
-
                         const SizedBox(height: 18),
+
+                        // --------- Plan sugerido ----------
+                        const _SectionTitle(text: 'Plan sugerido'),
+                        const SizedBox(height: 10),
+                        const SuggestedPlanCard(),
+                        const SizedBox(height: 18),
+
+                        // --------- Explorar ----------
                         const _SectionTitle(text: 'Explorar'),
                         const SizedBox(height: 10),
                         const _ExploreCard(),
@@ -153,11 +161,9 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
         );
 
       case 1:
-      // 👇 El tab 2 ahora muestra directamente la vista de Amigos
         return const FriendsView();
 
       case 2:
-      // Tab de perfil — recibe el logout local
         return ProfileView(
           username: widget.username,
           onSignOut: _handleLogout,
@@ -375,6 +381,48 @@ class _OpenTriviaCard extends StatelessWidget {
         title: const Text('Jugar Trivia (OpenTDB)'),
         subtitle: Text(
           'Preguntas de cultura general en 4 opciones.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// 👇 NUEVO: tarjeta “Actividades” (mismo estilo que Amigos)
+class _ActivitiesCard extends StatelessWidget {
+  const _ActivitiesCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEFF7FF), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.flag_rounded, color: primary),
+        ),
+        title: const Text('Actividades'),
+        subtitle: Text(
+          'Crea y gestiona tus objetivos diarios.',
           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
         ),
         trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
