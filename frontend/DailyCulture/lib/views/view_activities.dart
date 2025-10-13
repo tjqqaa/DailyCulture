@@ -2,7 +2,7 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
@@ -45,15 +45,20 @@ class _ActivitiesViewState extends State<ActivitiesView>
     return Uri.parse('$base$p').replace(queryParameters: q);
   }
 
+  // ==== Storage / caché ====
   final _storage = const FlutterSecureStorage();
+  static const _kCacheAll = 'activities_cache_all';
+  static const _kCacheToday = 'activities_cache_today';
+
   String? _token;
 
   late final TabController _tabs;
   bool _loadingAll = false;
+  bool _creating = false; // bloquear doble tap
 
   // Datos
   bool _loadingToday = false;
-  bool _loadingOpen = false;
+  bool _loadingOpen = false; // pestaña "Todas"
   List<Activity> _today = [];
   List<Activity> _open = [];
 
@@ -63,7 +68,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
   final _latCtrl = TextEditingController();
   final _lonCtrl = TextEditingController();
   DateTime? _dueDate;
-  bool _anyTime = true;
+  bool _anyTime = true; // Solo UI
   int _points = 5;
 
   @override
@@ -86,60 +91,141 @@ class _ActivitiesViewState extends State<ActivitiesView>
   Future<void> _init() async {
     setState(() => _loadingAll = true);
     _token = await _storage.read(key: 'access_token');
+
+    // 1) Cargar caché para no “parpadear” vacío al entrar
+    await _loadCache();
+
+    // 2) Sincronizar con servidor
     await _refreshAll();
+
     if (mounted) setState(() => _loadingAll = false);
   }
 
-  Map<String, String> _headers() => {
+  Map<String, String> _headers({bool jsonBody = false}) => {
     'Accept': 'application/json',
-    'Content-Type': 'application/json',
+    if (jsonBody) 'Content-Type': 'application/json',
     if (_token != null) 'Authorization': 'Bearer $_token',
   };
 
   Future<void> _refreshAll() async {
-    await Future.wait([_fetchToday(), _fetchOpen()]);
+    await Future.wait([_fetchToday(), _fetchAllAll()]);
+  }
+
+  /* ====================== CACHE ====================== */
+
+  Future<void> _loadCache() async {
+    try {
+      final sAll = await _storage.read(key: _kCacheAll);
+      if (sAll != null && sAll.isNotEmpty) {
+        final list = (jsonDecode(sAll) as List)
+            .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        if (mounted) setState(() => _open = list);
+      }
+      final sToday = await _storage.read(key: _kCacheToday);
+      if (sToday != null && sToday.isNotEmpty) {
+        final list = (jsonDecode(sToday) as List)
+            .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        if (mounted) setState(() => _today = list);
+      }
+    } catch (e) {
+      debugPrint('CACHE LOAD ERROR: $e');
+    }
+  }
+
+  Future<void> _saveCache() async {
+    try {
+      final allJson = _open.map((a) => a.toJson()).toList();
+      final todayJson = _today.map((a) => a.toJson()).toList();
+      await _storage.write(key: _kCacheAll, value: jsonEncode(allJson));
+      await _storage.write(key: _kCacheToday, value: jsonEncode(todayJson));
+    } catch (e) {
+      debugPrint('CACHE SAVE ERROR: $e');
+    }
   }
 
   /* ====================== FETCH ====================== */
 
+  // Soporta lista directa o objeto con items/results
+  List<Map<String, dynamic>> _asMapList(dynamic decoded) {
+    final listDyn = decoded is List
+        ? decoded
+        : decoded is Map && decoded['items'] is List
+        ? decoded['items']
+        : decoded is Map && decoded['results'] is List
+        ? decoded['results']
+        : <dynamic>[];
+    return listDyn
+        .cast<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+  }
+
   Future<void> _fetchToday() async {
     setState(() => _loadingToday = true);
     try {
-      final res = await http.get(_apiUri('/activities/today'), headers: _headers());
+      final uri = _apiUri('/activities/today');
+      debugPrint('[GET] $uri');
+      final res = await http.get(uri, headers: _headers());
       if (res.statusCode == 401) {
         _snack('Sesión inválida. Inicia sesión.');
         return;
       }
-      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
-      final list = (jsonDecode(res.body) as List).cast<Map>().toList();
-      final items =
-      list.map((m) => Activity.fromJson(Map<String, dynamic>.from(m))).toList();
+      if (res.statusCode != 200) {
+        debugPrint('Body: ${res.body}');
+        throw Exception('HTTP ${res.statusCode}');
+      }
+
+      final decoded = jsonDecode(res.body);
+      final items = _asMapList(decoded).map(Activity.fromJson).toList();
+
       if (!mounted) return;
       setState(() => _today = items);
-    } catch (_) {
-      // silencio en UI
+      await _saveCache(); // persistimos
+    } catch (e, st) {
+      debugPrint('ERROR _fetchToday: $e\n$st');
     } finally {
       if (mounted) setState(() => _loadingToday = false);
     }
   }
 
-  Future<void> _fetchOpen() async {
+  // Trae TODAS (status=all) con paginación
+  Future<void> _fetchAllAll() async {
     setState(() => _loadingOpen = true);
     try {
-      final res =
-      await http.get(_apiUri('/activities', {'status': 'open'}), headers: _headers());
-      if (res.statusCode == 401) {
-        _snack('Sesión inválida. Inicia sesión.');
-        return;
+      const pageSize = 100;
+      int offset = 0;
+      final acc = <Activity>[];
+
+      while (true) {
+        final q = {
+          'status': 'all',
+          'limit': '$pageSize',
+          'offset': '$offset',
+        };
+        final uri = _apiUri('/activities', q);
+        debugPrint('[GET] $uri');
+        final res = await http.get(uri, headers: _headers());
+        if (res.statusCode == 401) {
+          _snack('Sesión inválida. Inicia sesión.');
+          return;
+        }
+        if (res.statusCode != 200) {
+          debugPrint('Body: ${res.body}');
+          throw Exception('HTTP ${res.statusCode}');
+        }
+        final page = _asMapList(jsonDecode(res.body)).map(Activity.fromJson).toList();
+        acc.addAll(page);
+        if (page.length < pageSize) break;
+        offset += pageSize;
       }
-      if (res.statusCode != 200) throw Exception('HTTP ${res.statusCode}');
-      final list = (jsonDecode(res.body) as List).cast<Map>().toList();
-      final items =
-      list.map((m) => Activity.fromJson(Map<String, dynamic>.from(m))).toList();
+
       if (!mounted) return;
-      setState(() => _open = items);
-    } catch (_) {
-      // silencio
+      setState(() => _open = acc);
+      await _saveCache(); // persistimos
+    } catch (e, st) {
+      debugPrint('ERROR _fetchAllAll: $e\n$st');
     } finally {
       if (mounted) setState(() => _loadingOpen = false);
     }
@@ -174,7 +260,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
       final body = jsonEncode({'lat': pos.latitude, 'lon': pos.longitude});
       final res = await http.post(
         _apiUri('/activities/${a.id}/checkin'),
-        headers: _headers(),
+        headers: _headers(jsonBody: true),
         body: body,
       );
       if (res.statusCode != 200) {
@@ -208,8 +294,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
       final res = await http.post(_apiUri(path, q), headers: _headers());
       if (res.statusCode != 200) {
-        final msg =
-        _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
+        final msg = _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
         _snack(msg);
         return;
       }
@@ -223,7 +308,14 @@ class _ActivitiesViewState extends State<ActivitiesView>
   String _extractMsg(http.Response res, {required String fallback}) {
     try {
       final m = jsonDecode(res.body);
-      if (m is Map && m['detail'] != null) return m['detail'].toString();
+      if (m is Map) {
+        if (m['detail'] != null) return m['detail'].toString();
+        if (m['message'] != null) return m['message'].toString();
+        if (m['error'] != null) return m['error'].toString();
+        if (m['errors'] is List && (m['errors'] as List).isNotEmpty) {
+          return (m['errors'] as List).first.toString();
+        }
+      }
     } catch (_) {}
     return fallback;
   }
@@ -257,8 +349,10 @@ class _ActivitiesViewState extends State<ActivitiesView>
                 height: 4,
                 width: 44,
                 margin: const EdgeInsets.only(bottom: 14),
-                decoration:
-                BoxDecoration(color: Colors.black26, borderRadius: BorderRadius.circular(2)),
+                decoration: BoxDecoration(
+                  color: Colors.black26,
+                  borderRadius: BorderRadius.circular(2),
+                ),
               ),
               const Text('Nueva actividad',
                   style: TextStyle(fontWeight: FontWeight.w800, fontSize: 18)),
@@ -363,7 +457,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
               ),
               const SizedBox(height: 10),
 
-              // Fecha + any time
+              // Fecha + any time (solo UI)
               Row(
                 children: [
                   Expanded(
@@ -424,8 +518,14 @@ class _ActivitiesViewState extends State<ActivitiesView>
                       backgroundColor: _primary,
                       foregroundColor: Colors.white,
                     ),
-                    onPressed: _createActivity,
-                    child: const Text('Crear'),
+                    onPressed: _creating ? null : _createActivity,
+                    child: _creating
+                        ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                        : const Text('Crear'),
                   ),
                 ],
               ),
@@ -437,6 +537,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
   }
 
   Future<void> _createActivity() async {
+    if (_creating) return; // anti doble tap
     final title = _titleCtrl.text.trim();
     if (title.isEmpty) {
       _snack('Pon un título');
@@ -446,37 +547,50 @@ class _ActivitiesViewState extends State<ActivitiesView>
     final lon = double.tryParse(_lonCtrl.text.trim());
     final place = _placeCtrl.text.trim();
 
+    // NO enviar any_time (tu API no lo soporta)
     final payload = <String, dynamic>{
       'title': title,
-      'kind': 'visit', // o 'read', 'watch', etc.
-      'any_time': _anyTime,
+      'kind': 'visit',
       'points_on_complete': _points,
       if (_dueDate != null) 'due_date': _dueDate!.toIso8601String().split('T').first,
       if (place.isNotEmpty) 'place_name': place,
       if (lat != null) 'place_lat': lat,
       if (lon != null) 'place_lon': lon,
+      if (lat != null && lon != null) 'radius_m': 200,
     };
 
-    // Solo añadir radius si hay lat y lon
-    if (lat != null && lon != null) {
-      payload['radius_m'] = 200;
-    }
-
     try {
+      setState(() => _creating = true);
+      final uri = _apiUri('/activities');
+      debugPrint('[POST] $uri\n$payload');
       final res = await http.post(
-        _apiUri('/activities'),
-        headers: _headers(),
+        uri,
+        headers: _headers(jsonBody: true),
         body: jsonEncode(payload),
       );
       if (res.statusCode != 201 && res.statusCode != 200) {
+        debugPrint('Create body: ${res.body}');
         _snack(_extractMsg(res, fallback: 'No se pudo crear (${res.statusCode}).'));
         return;
       }
-      if (mounted) Navigator.pop(context); // cerrar sheet
+
+      // Inyección optimista si devuelve el objeto
+      try {
+        final created =
+        Activity.fromJson(Map<String, dynamic>.from(jsonDecode(res.body)));
+        setState(() => _open.insert(0, created));
+        await _saveCache(); // persistimos la nueva lista
+      } catch (_) {}
+
+      if (mounted) Navigator.pop(context);
       _snack('Actividad creada ✅');
+
+      // Sincroniza con servidor por si faltan campos
       await _refreshAll();
     } catch (e) {
       _snack('Error de red: $e');
+    } finally {
+      if (mounted) setState(() => _creating = false);
     }
   }
 
