@@ -215,7 +215,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
           debugPrint('Body: ${res.body}');
           throw Exception('HTTP ${res.statusCode}');
         }
-        final page = _asMapList(jsonDecode(res.body)).map(Activity.fromJson).toList();
+        final page =
+        _asMapList(jsonDecode(res.body)).map(Activity.fromJson).toList();
         acc.addAll(page);
         if (page.length < pageSize) break;
         offset += pageSize;
@@ -264,7 +265,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
         body: body,
       );
       if (res.statusCode != 200) {
-        final msg = _extractMsg(res, fallback: 'Check-in falló (${res.statusCode}).');
+        final msg =
+        _extractMsg(res, fallback: 'Check-in falló (${res.statusCode}).');
         _snack(msg);
         return;
       }
@@ -294,7 +296,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
       final res = await http.post(_apiUri(path, q), headers: _headers());
       if (res.statusCode != 200) {
-        final msg = _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
+        final msg =
+        _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
         _snack(msg);
         return;
       }
@@ -394,7 +397,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
                   IconButton(
                     tooltip: 'Elegir en mapa',
                     onPressed: () async {
-                      final initCenter = (_latCtrl.text.isNotEmpty && _lonCtrl.text.isNotEmpty)
+                      final initCenter =
+                      (_latCtrl.text.isNotEmpty && _lonCtrl.text.isNotEmpty)
                           ? LatLng(
                         double.tryParse(_latCtrl.text) ?? 40.4168,
                         double.tryParse(_lonCtrl.text) ?? -3.7038,
@@ -630,7 +634,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
                 children: [
-                  // Header (sin cards)
+                  // Header con botón de volver
                   Container(
                     padding: const EdgeInsets.all(18),
                     decoration: BoxDecoration(
@@ -646,6 +650,13 @@ class _ActivitiesViewState extends State<ActivitiesView>
                     ),
                     child: Row(
                       children: [
+                        IconButton(
+                          tooltip: 'Volver',
+                          style: IconButton.styleFrom(backgroundColor: Colors.white),
+                          onPressed: () => Navigator.pop(context),
+                          icon: const Icon(Icons.arrow_back_rounded, color: Colors.black87),
+                        ),
+                        const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
@@ -731,6 +742,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
     );
   }
 
+  // ==== FIX overflow: item con Row + Expanded y límites de ancho ====
   Widget _buildList(List<Activity> data, bool loading, {required String emptyText}) {
     if (loading) {
       return const Center(
@@ -753,54 +765,81 @@ class _ActivitiesViewState extends State<ActivitiesView>
         final a = data[i];
         final hasPlace = (a.placeLat != null && a.placeLon != null);
         return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0xFFF0ECE4)),
             boxShadow: const [BoxShadow(color: Color(0x11000000), blurRadius: 10, offset: Offset(0, 5))],
           ),
-          child: ListTile(
-            leading: Icon(_iconFor(a), color: _primary),
-            title: Text(a.title, style: const TextStyle(fontWeight: FontWeight.w800)),
-            subtitle: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (a.placeName != null && a.placeName!.trim().isNotEmpty)
-                  Text(a.placeName!, style: TextStyle(color: Colors.black.withOpacity(.65))),
-                Row(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Icon(_iconFor(a), color: _primary),
+              const SizedBox(width: 10),
+
+              // Contenido que puede ocupar el espacio restante
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.event_outlined, size: 16),
-                    const SizedBox(width: 4),
-                    Text(_prettyDate(a.dueDate),
-                        style: TextStyle(color: Colors.black.withOpacity(.65))),
-                    const SizedBox(width: 12),
-                    const Icon(Icons.stars_outlined, size: 16),
-                    const SizedBox(width: 4),
-                    Text('${a.pointsOnComplete ?? 0} pts',
-                        style: TextStyle(color: Colors.black.withOpacity(.65))),
+                    Text(a.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w800)),
+                    if (a.placeName != null && a.placeName!.trim().isNotEmpty)
+                      Text(a.placeName!,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: Colors.black.withOpacity(.65))),
+                    const SizedBox(height: 2),
+                    Row(
+                      children: [
+                        const Icon(Icons.event_outlined, size: 16),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            _prettyDate(a.dueDate),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: Colors.black.withOpacity(.65)),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        const Icon(Icons.stars_outlined, size: 16),
+                        const SizedBox(width: 4),
+                        Text('${a.pointsOnComplete ?? 0} pts',
+                            style: TextStyle(color: Colors.black.withOpacity(.65))),
+                      ],
+                    ),
                   ],
                 ),
-              ],
-            ),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (hasPlace)
-                  IconButton(
-                    tooltip: 'Check-in',
-                    onPressed: () => _checkin(a),
-                    icon: const Icon(Icons.my_location_outlined),
-                  ),
-                FilledButton(
+              ),
+
+              const SizedBox(width: 8),
+
+              if (hasPlace)
+                IconButton(
+                  tooltip: 'Check-in',
+                  constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                  onPressed: () => _checkin(a),
+                  icon: const Icon(Icons.my_location_outlined),
+                ),
+
+              // Botón limitado para evitar desbordes
+              ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 40, minWidth: 92, maxWidth: 120),
+                child: FilledButton(
                   style: FilledButton.styleFrom(
                     backgroundColor: _primary,
                     foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                   ),
                   onPressed: () => _complete(a),
-                  child: const Text('Completar'),
+                  child: const Text('Completar', overflow: TextOverflow.ellipsis),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         );
       },
