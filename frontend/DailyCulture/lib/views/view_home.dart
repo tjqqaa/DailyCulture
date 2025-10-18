@@ -6,7 +6,10 @@ import 'view_login.dart';
 import 'view_profile.dart';
 import 'view_quiz.dart';
 import 'view_friends.dart';
-import 'view_activities.dart'; // 👈 NUEVO: navegación a Actividades
+import 'view_activities.dart'; // navegación a Actividades
+import 'view_eventbrite.dart'; // navegación a Eventbrite
+import 'view_europeana.dart'; // navegación a Europeana
+import 'view_openlibrary.dart'; // 👈 NUEVO: navegación a Open Library
 
 // Plan sugerido (BoredAPI + Wikipedia ES)
 import 'suggested_plan.dart';
@@ -118,7 +121,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         ),
                         const SizedBox(height: 18),
 
-                        // --------- Jugar Trivia ----------
+                        // Trivia
                         _OpenTriviaCard(onTap: () {
                           Navigator.push(
                             context,
@@ -127,26 +130,54 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         }),
                         const SizedBox(height: 12),
 
-                        // --------- NUEVO botón tipo "Amigos": ACTIVIDADES ----------
+                        // Actividades
                         _ActivitiesCard(onTap: () {
                           Navigator.push(
                             context,
                             MaterialPageRoute(builder: (_) => const ActivitiesView()),
                           );
                         }),
+                        const SizedBox(height: 12),
+
+                        // Eventos culturales (Eventbrite)
+                        _EventbriteCard(onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const EventbriteView()),
+                          );
+                        }),
+                        const SizedBox(height: 12),
+
+                        // Colecciones (Europeana)
+                        _EuropeanaCard(onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const EuropeanaView()),
+                          );
+                        }),
+                        const SizedBox(height: 12),
+
+                        // 👇 NUEVO: Libros (Open Library)
+                        _OpenLibraryCard(onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const OpenLibraryView()),
+                          );
+                        }),
                         const SizedBox(height: 18),
 
-                        // --------- Plan sugerido ----------
+                        // Plan sugerido
                         const _SectionTitle(text: 'Plan sugerido'),
                         const SizedBox(height: 10),
                         const SuggestedPlanCard(),
                         const SizedBox(height: 18),
 
-                        // --------- Explorar ----------
+                        // Explorar
                         const _SectionTitle(text: 'Explorar'),
                         const SizedBox(height: 10),
                         const _ExploreCard(),
                         const SizedBox(height: 24),
+
                         const _SectionTitle(text: 'Sugerencias para ti'),
                         const SizedBox(height: 10),
                         const _SuggestionsRow(),
@@ -390,7 +421,137 @@ class _OpenTriviaCard extends StatelessWidget {
   }
 }
 
-// 👇 NUEVO: tarjeta “Actividades” (mismo estilo que Amigos)
+// ---------- Tarjeta “Eventos (Eventbrite)” ----------
+class _EventbriteCard extends StatelessWidget {
+  const _EventbriteCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFE7FFF2), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.event_available_rounded, color: primary),
+        ),
+        title: const Text('Eventos culturales'),
+        subtitle: Text(
+          'Busca expos, conciertos y museos cerca (Eventbrite).',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// ---------- Tarjeta “Colecciones (Europeana)” ----------
+class _EuropeanaCard extends StatelessWidget {
+  const _EuropeanaCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFF2E7), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.museum_outlined, color: primary),
+        ),
+        title: const Text('Colecciones digitales'),
+        subtitle: Text(
+          'Explora arte y patrimonio en línea (Europeana).',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black.withOpacity(.6)),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// ---------- NUEVO: Tarjeta “Libros (Open Library)” ----------
+class _OpenLibraryCard extends StatelessWidget {
+  const _OpenLibraryCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEFF7FF), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [
+          BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))
+        ],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.menu_book_outlined, color: primary),
+        ),
+        title: const Text('Libros y portadas'),
+        subtitle: Text(
+          'Busca títulos y autores (Open Library).',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Colors.black.withOpacity(.6),
+          ),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+// Tarjeta “Actividades”
 class _ActivitiesCard extends StatelessWidget {
   const _ActivitiesCard({required this.onTap});
   final VoidCallback onTap;
