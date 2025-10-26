@@ -26,6 +26,9 @@ class _ActivitiesViewState extends State<ActivitiesView>
   static const _bg = Color(0xFFFBF7EF);
   static const _primary = Color(0xFF5B53D6);
 
+  // Radio por defecto (m) si la actividad no trae radius_m
+  static const double _defaultRadiusM = 1000.0;
+
   // ==== BASE URL estilo FriendsView ====
   static const String _apiBaseOverride =
   String.fromEnvironment('API_BASE', defaultValue: '');
@@ -277,21 +280,73 @@ class _ActivitiesViewState extends State<ActivitiesView>
     }
   }
 
+  /// Diálogo para decidir si forzar la finalización fuera de radio
+  Future<bool> _confirmProceedOutOfRadius({
+    required double distance,
+    required double radius,
+    String? placeName,
+  }) async {
+    final unit = distance < 1000 ? 'm' : 'km';
+    final shown = distance < 1000 ? distance.toStringAsFixed(0) : (distance / 1000).toStringAsFixed(2);
+    final name = (placeName ?? 'el lugar');
+
+    return await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Fuera de la zona'),
+        content: Text(
+          'Estás a $shown $unit de $name (radio permitido: ${radius.toStringAsFixed(0)} m).\n\n'
+              '¿Quieres intentar completar igualmente?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Forzar')),
+        ],
+      ),
+    ) ??
+        false;
+  }
+
   Future<void> _complete(Activity a) async {
     try {
       String path = '/activities/${a.id}/complete';
       Map<String, String>? q;
 
-      // Si la actividad tiene geocerca, intentamos verificar ubicación
-      if (a.placeLat != null && a.placeLon != null) {
+      final hasPlace = (a.placeLat != null && a.placeLon != null);
+      final radius = (a.radiusM ?? _defaultRadiusM).toDouble();
+
+      if (hasPlace) {
+        // 1) Obtener posición del usuario
         final pos = await _currentPosition();
-        if (pos != null) {
-          q = {
-            'verify_location': 'true',
-            'lat': pos.latitude.toString(),
-            'lon': pos.longitude.toString(),
-          };
+        if (pos == null) {
+          _snack('No se pudo obtener tu ubicación.');
+          return;
         }
+
+        // 2) Calcular distancia al punto de la actividad
+        final distance = geo.Geolocator.distanceBetween(
+          pos.latitude,
+          pos.longitude,
+          a.placeLat!,
+          a.placeLon!,
+        );
+
+        // 3) Si está fuera del radio, preguntar si quiere forzar
+        if (distance > radius) {
+          final force = await _confirmProceedOutOfRadius(
+            distance: distance,
+            radius: radius,
+            placeName: a.placeName,
+          );
+          if (!force) return;
+        }
+
+        // 4) Enviar siempre lat/lon para verificación en backend
+        q = {
+          'verify_location': 'true',
+          'lat': pos.latitude.toString(),
+          'lon': pos.longitude.toString(),
+        };
       }
 
       final res = await http.post(_apiUri(path, q), headers: _headers());
@@ -860,7 +915,8 @@ class _BgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
-    final paint = Paint()
+    final paint = Paint
+      ()
       ..shader = const LinearGradient(
         colors: [Color(0xFFFDFBF6), Color(0xFFFBF7EF)],
         begin: Alignment.topCenter,
