@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dailyculture.dailyculture">
 
-    <!-- Permisos (siempre fuera de <application>) -->
+    <!-- Permisos -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -10,8 +10,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- ✅ Necesario para poder activar el toggle “Alarms & reminders” -->
+    <!-- Exact alarms (solo si vas a usarlas) -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+
+    <!-- ✅ Para reprogramar notifs tras reinicio / update -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
         android:name="${applicationName}"
@@ -38,14 +41,30 @@
 
         <meta-data android:name="flutterEmbedding" android:value="2" />
 
+        <!-- Tu servicio de geocercas (opcional) -->
         <service
             android:name="com.pravera.geofence_service.service.GeofenceService"
             android:exported="false"
             android:foregroundServiceType="location" />
 
+        <!-- Canal por defecto de FCM (inofensivo si no usas FCM) -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
             android:value="dailyculture_channel" />
+
+        <!-- ✅ Receivers de flutter_local_notifications -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
+            android:exported="false" />
     </application>
 
     <queries>
