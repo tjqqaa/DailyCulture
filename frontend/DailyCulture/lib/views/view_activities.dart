@@ -615,7 +615,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
       if (place.isNotEmpty) 'place_name': place,
       if (lat != null) 'place_lat': lat,
       if (lon != null) 'place_lon': lon,
-      if (lat != null && lon != null) 'radius_m': 200,
+      if (lat != null && lon != null) 'radius_m': _defaultRadiusM.toInt(),
     };
 
     try {
