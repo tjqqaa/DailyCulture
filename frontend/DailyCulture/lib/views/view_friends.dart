@@ -7,6 +7,7 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
 import 'view_login.dart';
+import 'view_home.dart'; // ✅ NUEVO: para volver al Home
 
 class FriendsView extends StatefulWidget {
   const FriendsView({super.key});
@@ -115,6 +116,25 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
       _fetchRequests(),
       _fetchLeaderboard(),
     ]);
+  }
+
+  /* ===================== Navegación a Home (ARREGLO) ===================== */
+
+  void _goHome() {
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop(); // si se llegó con push, volvemos con pop
+    } else {
+      // si no hay nada que hacer pop, reemplazamos con Home
+      nav.pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeView()),
+      );
+    }
+  }
+
+  Future<bool> _onWillPop() async {
+    _goHome();
+    return false; // ya gestionado
   }
 
   /* ===================== API calls ===================== */
@@ -307,116 +327,119 @@ class _FriendsViewState extends State<FriendsView> with SingleTickerProviderStat
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _bg,
-      body: Stack(
-        children: [
-          const _DecorBackground(),
-          SafeArea(
-            child: RefreshIndicator(
-              color: _primary,
-              onRefresh: _refreshAll,
-              child: ListView(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-                children: [
-                  // Header
-                  Container(
-                    padding: const EdgeInsets.all(18),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF7C75F0), Color(0xFF5B53D6)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
+    return WillPopScope( // ✅ NUEVO: captura botón físico “atrás”
+      onWillPop: _onWillPop,
+      child: Scaffold(
+        backgroundColor: _bg,
+        body: Stack(
+          children: [
+            const _DecorBackground(),
+            SafeArea(
+              child: RefreshIndicator(
+                color: _primary,
+                onRefresh: _refreshAll,
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                  children: [
+                    // Header
+                    Container(
+                      padding: const EdgeInsets.all(18),
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF7C75F0), Color(0xFF5B53D6)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(22),
+                        boxShadow: const [BoxShadow(color: Color(0x22000000), blurRadius: 18, offset: Offset(0, 10))],
                       ),
-                      borderRadius: BorderRadius.circular(22),
-                      boxShadow: const [BoxShadow(color: Color(0x22000000), blurRadius: 18, offset: Offset(0, 10))],
-                    ),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          tooltip: 'Volver',
-                          style: IconButton.styleFrom(backgroundColor: Colors.white),
-                          onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_rounded, color: Colors.black87),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(.15),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: Colors.white.withOpacity(.22)),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            tooltip: 'Volver',
+                            style: IconButton.styleFrom(backgroundColor: Colors.white),
+                            onPressed: _goHome, // ✅ antes: Navigator.pop(context)
+                            icon: const Icon(Icons.arrow_back_rounded, color: Colors.black87),
                           ),
-                          child: const Icon(Icons.group_rounded, color: Colors.white, size: 28),
-                        ),
-                        const SizedBox(width: 14),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text('Amigos',
-                                  style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900, height: 1.05)),
-                              const SizedBox(height: 6),
-                              Text(
-                                _loadingAll ? 'Cargando…' : 'Gestiona solicitudes y ranking',
-                                style: TextStyle(color: Colors.white.withOpacity(.95), fontWeight: FontWeight.w700),
-                              ),
-                            ],
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(.15),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: Colors.white.withOpacity(.22)),
+                            ),
+                            child: const Icon(Icons.group_rounded, color: Colors.white, size: 28),
                           ),
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton(
-                          tooltip: 'Recargar',
-                          style: IconButton.styleFrom(backgroundColor: Colors.white),
-                          onPressed: _refreshAll,
-                          icon: const Icon(Icons.refresh_rounded, color: Colors.black87),
-                        ),
-                      ],
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text('Amigos',
+                                    style: TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w900, height: 1.05)),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _loadingAll ? 'Cargando…' : 'Gestiona solicitudes y ranking',
+                                  style: TextStyle(color: Colors.white.withOpacity(.95), fontWeight: FontWeight.w700),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            tooltip: 'Recargar',
+                            style: IconButton.styleFrom(backgroundColor: Colors.white),
+                            onPressed: _refreshAll,
+                            icon: const Icon(Icons.refresh_rounded, color: Colors.black87),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
 
-                  const SizedBox(height: 14),
+                    const SizedBox(height: 14),
 
-                  // Tabs
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: const Color(0xFFF0ECE4)),
-                      boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
-                    ),
-                    child: Column(
-                      children: [
-                        TabBar(
-                          controller: _tabs,
-                          labelColor: _primary,
-                          unselectedLabelColor: Colors.black87,
-                          indicatorColor: _primary,
-                          tabs: const [
-                            Tab(icon: Icon(Icons.people_alt_rounded), text: 'Amigos'),
-                            Tab(icon: Icon(Icons.inbox_rounded), text: 'Solicitudes'),
-                            Tab(icon: Icon(Icons.emoji_events_rounded), text: 'Ranking'),
-                          ],
-                        ),
-                        SizedBox(
-                          height: 560,
-                          child: TabBarView(
+                    // Tabs
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFF0ECE4)),
+                        boxShadow: const [BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))],
+                      ),
+                      child: Column(
+                        children: [
+                          TabBar(
                             controller: _tabs,
-                            children: [
-                              _buildFriendsTab(),
-                              _buildRequestsTab(),
-                              _buildLeaderboardTab(),
+                            labelColor: _primary,
+                            unselectedLabelColor: Colors.black87,
+                            indicatorColor: _primary,
+                            tabs: const [
+                              Tab(icon: Icon(Icons.people_alt_rounded), text: 'Amigos'),
+                              Tab(icon: Icon(Icons.inbox_rounded), text: 'Solicitudes'),
+                              Tab(icon: Icon(Icons.emoji_events_rounded), text: 'Ranking'),
                             ],
                           ),
-                        ),
-                      ],
+                          SizedBox(
+                            height: 560,
+                            child: TabBarView(
+                              controller: _tabs,
+                              children: [
+                                _buildFriendsTab(),
+                                _buildRequestsTab(),
+                                _buildLeaderboardTab(),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

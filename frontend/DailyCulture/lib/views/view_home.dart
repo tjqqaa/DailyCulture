@@ -2,9 +2,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-// 👇 Importa el servicio de notificaciones
-import 'package:dailyculture/services/notification_service.dart';
+// 👇 Importa el servicio de notificaciones (ruta relativa para evitar problemas de paquete)
+import '../services/notification_service.dart';
 
+// Vistas
 import 'view_login.dart';
 import 'view_profile.dart';
 import 'view_quiz.dart';
@@ -13,6 +14,10 @@ import 'view_activities.dart';
 import 'view_openlibrary.dart';
 import 'view_europeana.dart'; // 👈 NUEVO: vista de Europeana
 import 'suggested_plan.dart';
+
+// 👇 Accesibilidad: singleton y botón
+import '../main.dart' show a11y;
+import '../widgets/accessibility_menu_button.dart';
 
 class HomeView extends StatefulWidget {
   const HomeView({
@@ -267,7 +272,14 @@ class _HeaderFancy extends StatelessWidget {
               ],
             ),
           ),
+
           const SizedBox(width: 8),
+
+          // ♿ Botón de accesibilidad
+          AccessibilityMenuButton(controller: a11y),
+          const SizedBox(width: 8),
+
+          // Logout
           InkWell(
             onTap: onAvatarTap,
             borderRadius: BorderRadius.circular(20),
@@ -308,6 +320,8 @@ class _TodayCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const primary = Color(0xFF5B53D6);
+    final mq = MediaQuery.of(context);
+    final big = mq.textScaleFactor >= 1.2; // umbral sencillo
 
     return Card(
       elevation: 10,
@@ -318,71 +332,92 @@ class _TodayCard extends StatelessWidget {
         side: const BorderSide(color: Color(0xFFF0ECE4)),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 14),
-        child: Row(
+        padding: EdgeInsets.fromLTRB(16, 16, 16, big ? 18 : 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              height: 46,
-              width: 46,
-              decoration: BoxDecoration(
-                color: primary.withOpacity(.12),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: const Icon(Icons.checklist_rounded, color: primary),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Tu objetivo de hoy',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      )),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Completa 1 actividad de cultura diaria.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.black.withOpacity(.6),
-                    ),
+            // ── Fila 1: icono + textos ────────────────────────────────
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  height: 46,
+                  width: 46,
+                  decoration: BoxDecoration(
+                    color: primary.withOpacity(.12),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                ],
-              ),
+                  child: const Icon(Icons.checklist_rounded, color: primary),
+                ),
+                const SizedBox(width: 14),
+                // El texto ocupa el resto y puede crecer en alto
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Tu objetivo de hoy',
+                        softWrap: true,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          height: 1.15,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Completa 1 actividad de cultura diaria.',
+                        softWrap: true,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.black.withOpacity(.6),
+                          height: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
-            // Botón principal
-            FilledButton(
-              onPressed: () {},
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFF5B53D6),
-                minimumSize: const Size(0, 40),
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: const Text('Empezar'),
-            ),
-            const SizedBox(width: 8),
-            // Botón para enviar una notificación inmediata
-            OutlinedButton.icon(
-              onPressed: () async {
-                await NotificationService.showNow(
-                  title: 'DailyCulture',
-                  body: '¡Vamos! Completa tu actividad de hoy ✨',
-                );
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Notificación enviada')),
-                  );
-                }
-              },
-              icon: const Icon(Icons.notifications_active_rounded),
-              label: const Text('Notificar'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: primary,
-                side: const BorderSide(color: primary),
-                minimumSize: const Size(0, 40),
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
+
+            const SizedBox(height: 12),
+
+            // ── Fila 2: botones que se adaptan y pueden bajar de línea ─
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton(
+                  onPressed: () {},
+                  style: FilledButton.styleFrom(
+                    backgroundColor: primary,
+                    minimumSize: const Size(0, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                  child: const Text('Empezar'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await NotificationService.showNow(
+                      title: 'DailyCulture',
+                      body: '¡Vamos! Completa tu actividad de hoy ✨',
+                    );
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Notificación enviada')),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.notifications_active_rounded),
+                  label: const Text('Notificar'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: primary,
+                    side: const BorderSide(color: primary),
+                    minimumSize: const Size(0, 40),
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ],
             ),
           ],
         ),

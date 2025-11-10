@@ -1,4 +1,4 @@
-// lib/views/view_activities.dart
+
 import 'dart:convert';
 import 'dart:io' show Platform;
 
