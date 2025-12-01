@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-// 👇 Importa el servicio de notificaciones (ruta relativa para evitar problemas de paquete)
+// 👇 Servicio de notificaciones (ruta relativa)
 import '../services/notification_service.dart';
 
 // Vistas
@@ -12,10 +12,12 @@ import 'view_quiz.dart';
 import 'view_friends.dart';
 import 'view_activities.dart';
 import 'view_openlibrary.dart';
-import 'view_europeana.dart'; // 👈 NUEVO: vista de Europeana
+import 'view_europeana.dart';
 import 'suggested_plan.dart';
+import 'view_rewards.dart';
+import 'view_objectives.dart'; // 👈 IMPORTANTE: Objetivos
 
-// 👇 Accesibilidad: singleton y botón
+// 👇 Accesibilidad
 import '../main.dart' show a11y;
 import '../widgets/accessibility_menu_button.dart';
 
@@ -122,7 +124,7 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         const SizedBox(height: 10),
                         FadeTransition(
                           opacity: CurvedAnimation(parent: _ac, curve: Curves.easeOutCubic),
-                          child: const _TodayCard(),
+                          child: const _TodayCard(), // 👈 “Empezar” va a ObjectivesView
                         ),
                         const SizedBox(height: 18),
 
@@ -142,6 +144,14 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         }),
                         const SizedBox(height: 12),
 
+                        _RewardsCard(onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const RewardsView()),
+                          );
+                        }),
+                        const SizedBox(height: 12),
+
                         _OpenLibraryCard(onTap: () {
                           Navigator.push(
                             context,
@@ -150,7 +160,6 @@ class _HomeViewState extends State<HomeView> with SingleTickerProviderStateMixin
                         }),
                         const SizedBox(height: 12),
 
-                        // 👇 NUEVO: botón para Europeana
                         _EuropeanaCard(onTap: () {
                           Navigator.push(
                             context,
@@ -336,7 +345,7 @@ class _TodayCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // ── Fila 1: icono + textos ────────────────────────────────
+            // ── Fila 1 ──
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -350,7 +359,6 @@ class _TodayCard extends StatelessWidget {
                   child: const Icon(Icons.checklist_rounded, color: primary),
                 ),
                 const SizedBox(width: 14),
-                // El texto ocupa el resto y puede crecer en alto
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -380,13 +388,19 @@ class _TodayCard extends StatelessWidget {
 
             const SizedBox(height: 12),
 
-            // ── Fila 2: botones que se adaptan y pueden bajar de línea ─
+            // ── Fila 2: acciones ──
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
                 FilledButton(
-                  onPressed: () {},
+                  onPressed: () {
+                    // 👇 Ahora abre la pantalla de Objetivos
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const ObjectivesView()),
+                    );
+                  },
                   style: FilledButton.styleFrom(
                     backgroundColor: primary,
                     minimumSize: const Size(0, 40),
@@ -467,7 +481,6 @@ class _OpenTriviaCard extends StatelessWidget {
   }
 }
 
-// Tarjeta “Actividades”
 class _ActivitiesCard extends StatelessWidget {
   const _ActivitiesCard({required this.onTap});
   final VoidCallback onTap;
@@ -509,7 +522,52 @@ class _ActivitiesCard extends StatelessWidget {
   }
 }
 
-// Tarjeta “Libros (Open Library)”
+// 👇 Recompensas
+class _RewardsCard extends StatelessWidget {
+  const _RewardsCard({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    const primary = Color(0xFF5B53D6);
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFF0ECE4)),
+        gradient: const LinearGradient(
+          colors: [Color(0xFFEEE9FF), Color(0xFFFFFFFF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        boxShadow: const [
+          BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))
+        ],
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        leading: Container(
+          height: 44,
+          width: 44,
+          decoration: BoxDecoration(
+            color: primary.withOpacity(.12),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Icon(Icons.card_giftcard_outlined, color: primary),
+        ),
+        title: const Text('Recompensas'),
+        subtitle: Text(
+          'Canjea tus puntos por descuentos y logros.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Colors.black.withOpacity(.6),
+          ),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 18, color: primary),
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
 class _OpenLibraryCard extends StatelessWidget {
   const _OpenLibraryCard({required this.onTap});
   final VoidCallback onTap;
@@ -555,7 +613,6 @@ class _OpenLibraryCard extends StatelessWidget {
   }
 }
 
-// 👇 NUEVO: Tarjeta “Europeana”
 class _EuropeanaCard extends StatelessWidget {
   const _EuropeanaCard({required this.onTap});
   final VoidCallback onTap;

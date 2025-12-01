@@ -1,4 +1,4 @@
-
+// lib/views/view_activities.dart
 import 'dart:convert';
 import 'dart:io' show Platform;
 
@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart' as geo;
+import 'package:crypto/crypto.dart' show sha1;
 
 // Modelo
 import 'package:dailyculture/models/activity.dart';
@@ -52,6 +53,12 @@ class _ActivitiesViewState extends State<ActivitiesView>
   final _storage = const FlutterSecureStorage();
   static const _kCacheAll = 'activities_cache_all';
   static const _kCacheToday = 'activities_cache_today';
+  static const _kCacheDone = 'activities_cache_done';
+  static const _kCacheMyPoints = 'my_points_local';
+
+  // Prefijo por usuario (evita contaminación entre sesiones)
+  String _userScope = 'anon';
+  String _ns(String base) => '$_userScope::$base';
 
   String? _token;
 
@@ -62,8 +69,13 @@ class _ActivitiesViewState extends State<ActivitiesView>
   // Datos
   bool _loadingToday = false;
   bool _loadingOpen = false; // pestaña "Todas"
+  bool _loadingDone = false; // pestaña "Completadas"
   List<Activity> _today = [];
   List<Activity> _open = [];
+  List<Activity> _done = [];
+
+  // Mis puntos (local, persistente)
+  int _myPoints = 0;
 
   // Creación (bottom sheet)
   final _titleCtrl = TextEditingController();
@@ -77,7 +89,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 2, vsync: this);
+    _tabs = TabController(length: 3, vsync: this);
     _init();
   }
 
@@ -95,6 +107,17 @@ class _ActivitiesViewState extends State<ActivitiesView>
     setState(() => _loadingAll = true);
     _token = await _storage.read(key: 'access_token');
 
+    // Prefijo por usuario a partir del token (10 chars de sha1)
+    if (_token != null && _token!.isNotEmpty) {
+      final h = sha1.convert(utf8.encode(_token!)).toString().substring(0, 10);
+      _userScope = 'u_$h';
+    } else {
+      _userScope = 'anon';
+    }
+
+    // Cargar contador local de puntos
+    await _loadMyPoints();
+
     // 1) Cargar caché para no “parpadear” vacío al entrar
     await _loadCache();
 
@@ -111,27 +134,57 @@ class _ActivitiesViewState extends State<ActivitiesView>
   };
 
   Future<void> _refreshAll() async {
-    await Future.wait([_fetchToday(), _fetchAllAll()]);
+    await Future.wait([_fetchToday(), _fetchOpen(), _fetchDone()]);
+    await _saveCache();
+  }
+
+  /* ====================== PUNTOS (LOCAL) ====================== */
+
+  Future<void> _loadMyPoints() async {
+    try {
+      final s = await _storage.read(key: _ns(_kCacheMyPoints));
+      _myPoints = int.tryParse(s ?? '0') ?? 0;
+    } catch (_) {
+      _myPoints = 0;
+    }
+  }
+
+  Future<void> _setMyPoints(int v) async {
+    _myPoints = v < 0 ? 0 : v;
+    await _storage.write(key: _ns(_kCacheMyPoints), value: '$_myPoints');
+  }
+
+  Future<void> _addPoints(int delta) async {
+    if (delta <= 0) return;
+    await _setMyPoints(_myPoints + delta);
   }
 
   /* ====================== CACHE ====================== */
 
   Future<void> _loadCache() async {
     try {
-      final sAll = await _storage.read(key: _kCacheAll);
+      final sAll = await _storage.read(key: _ns(_kCacheAll));
       if (sAll != null && sAll.isNotEmpty) {
         final list = (jsonDecode(sAll) as List)
             .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
             .toList();
-        if (mounted) setState(() => _open = list);
+        _open = list;
       }
-      final sToday = await _storage.read(key: _kCacheToday);
+      final sToday = await _storage.read(key: _ns(_kCacheToday));
       if (sToday != null && sToday.isNotEmpty) {
         final list = (jsonDecode(sToday) as List)
             .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
             .toList();
-        if (mounted) setState(() => _today = list);
+        _today = list;
       }
+      final sDone = await _storage.read(key: _ns(_kCacheDone));
+      if (sDone != null && sDone.isNotEmpty) {
+        final list = (jsonDecode(sDone) as List)
+            .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        _done = list;
+      }
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('CACHE LOAD ERROR: $e');
     }
@@ -139,10 +192,16 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
   Future<void> _saveCache() async {
     try {
-      final allJson = _open.map((a) => a.toJson()).toList();
-      final todayJson = _today.map((a) => a.toJson()).toList();
-      await _storage.write(key: _kCacheAll, value: jsonEncode(allJson));
-      await _storage.write(key: _kCacheToday, value: jsonEncode(todayJson));
+      await _storage.write(
+          key: _ns(_kCacheAll),
+          value: jsonEncode(_open.map((a) => a.toJson()).toList()));
+      await _storage.write(
+          key: _ns(_kCacheToday),
+          value: jsonEncode(_today.map((a) => a.toJson()).toList()));
+      await _storage.write(
+          key: _ns(_kCacheDone),
+          value: jsonEncode(_done.map((a) => a.toJson()).toList()));
+      // Puntos ya se guardan en _setMyPoints/_addPoints
     } catch (e) {
       debugPrint('CACHE SAVE ERROR: $e');
     }
@@ -150,25 +209,16 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
   /* ====================== FETCH ====================== */
 
-  // Soporta lista directa o objeto con items/results
-  List<Map<String, dynamic>> _asMapList(dynamic decoded) {
-    final listDyn = decoded is List
-        ? decoded
-        : decoded is Map && decoded['items'] is List
-        ? decoded['items']
-        : decoded is Map && decoded['results'] is List
-        ? decoded['results']
-        : <dynamic>[];
-    return listDyn
-        .cast<Map>()
-        .map((m) => Map<String, dynamic>.from(m))
-        .toList();
-  }
-
   Future<void> _fetchToday() async {
     setState(() => _loadingToday = true);
     try {
-      final uri = _apiUri('/activities/today');
+      // Con tu router: GET /activities?status=pending&date=today
+      final uri = _apiUri('/activities', {
+        'status': 'pending',
+        'date': 'today',
+        'limit': '200',
+        'offset': '0',
+      });
       debugPrint('[GET] $uri');
       final res = await http.get(uri, headers: _headers());
       if (res.statusCode == 401) {
@@ -181,11 +231,12 @@ class _ActivitiesViewState extends State<ActivitiesView>
       }
 
       final decoded = jsonDecode(res.body);
-      final items = _asMapList(decoded).map(Activity.fromJson).toList();
+      final items = (decoded as List)
+          .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
 
       if (!mounted) return;
       setState(() => _today = items);
-      await _saveCache(); // persistimos
     } catch (e, st) {
       debugPrint('ERROR _fetchToday: $e\n$st');
     } finally {
@@ -193,45 +244,63 @@ class _ActivitiesViewState extends State<ActivitiesView>
     }
   }
 
-  // Trae TODAS (status=all) con paginación
-  Future<void> _fetchAllAll() async {
+  // Pendientes
+  Future<void> _fetchOpen() async {
     setState(() => _loadingOpen = true);
     try {
-      const pageSize = 100;
-      int offset = 0;
-      final acc = <Activity>[];
+      final uri = _apiUri('/activities', {
+        'status': 'pending',
+        'limit': '200',
+        'offset': '0',
+      });
+      final res = await http.get(uri, headers: _headers());
 
-      while (true) {
-        final q = {
-          'status': 'all',
-          'limit': '$pageSize',
-          'offset': '$offset',
-        };
-        final uri = _apiUri('/activities', q);
-        debugPrint('[GET] $uri');
-        final res = await http.get(uri, headers: _headers());
-        if (res.statusCode == 401) {
-          _snack('Sesión inválida. Inicia sesión.');
-          return;
-        }
-        if (res.statusCode != 200) {
-          debugPrint('Body: ${res.body}');
-          throw Exception('HTTP ${res.statusCode}');
-        }
-        final page =
-        _asMapList(jsonDecode(res.body)).map(Activity.fromJson).toList();
-        acc.addAll(page);
-        if (page.length < pageSize) break;
-        offset += pageSize;
+      if (res.statusCode != 200) {
+        debugPrint('Body: ${res.body}');
+        throw Exception('HTTP ${res.statusCode}');
       }
 
+      final decoded = jsonDecode(res.body);
+      final result = (decoded as List)
+          .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+
       if (!mounted) return;
-      setState(() => _open = acc);
-      await _saveCache(); // persistimos
+      setState(() => _open = result);
     } catch (e, st) {
-      debugPrint('ERROR _fetchAllAll: $e\n$st');
+      debugPrint('ERROR _fetchOpen: $e\n$st');
     } finally {
       if (mounted) setState(() => _loadingOpen = false);
+    }
+  }
+
+  // Completadas
+  Future<void> _fetchDone() async {
+    setState(() => _loadingDone = true);
+    try {
+      final uri = _apiUri('/activities', {
+        'status': 'done',
+        'limit': '200',
+        'offset': '0',
+      });
+      final res = await http.get(uri, headers: _headers());
+
+      if (res.statusCode != 200) {
+        debugPrint('Body: ${res.body}');
+        throw Exception('HTTP ${res.statusCode}');
+      }
+
+      final decoded = jsonDecode(res.body);
+      final result = (decoded as List)
+          .map((e) => Activity.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+
+      if (!mounted) return;
+      setState(() => _done = result);
+    } catch (e, st) {
+      debugPrint('ERROR _fetchDone: $e\n$st');
+    } finally {
+      if (mounted) setState(() => _loadingDone = false);
     }
   }
 
@@ -268,8 +337,7 @@ class _ActivitiesViewState extends State<ActivitiesView>
         body: body,
       );
       if (res.statusCode != 200) {
-        final msg =
-        _extractMsg(res, fallback: 'Check-in falló (${res.statusCode}).');
+        final msg = _extractMsg(res, fallback: 'Check-in falló (${res.statusCode}).');
         _snack(msg);
         return;
       }
@@ -280,86 +348,94 @@ class _ActivitiesViewState extends State<ActivitiesView>
     }
   }
 
-  /// Diálogo para decidir si forzar la finalización fuera de radio
-  Future<bool> _confirmProceedOutOfRadius({
-    required double distance,
-    required double radius,
-    String? placeName,
-  }) async {
-    final unit = distance < 1000 ? 'm' : 'km';
-    final shown = distance < 1000 ? distance.toStringAsFixed(0) : (distance / 1000).toStringAsFixed(2);
-    final name = (placeName ?? 'el lugar');
-
-    return await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Fuera de la zona'),
-        content: Text(
-          'Estás a $shown $unit de $name (radio permitido: ${radius.toStringAsFixed(0)} m).\n\n'
-              '¿Quieres intentar completar igualmente?',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancelar')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Forzar')),
-        ],
-      ),
-    ) ??
-        false;
-  }
-
   Future<void> _complete(Activity a) async {
     try {
-      String path = '/activities/${a.id}/complete';
-      Map<String, String>? q;
-
       final hasPlace = (a.placeLat != null && a.placeLon != null);
-      final radius = (a.radiusM ?? _defaultRadiusM).toDouble();
 
+      Map<String, dynamic> body = {}; // siempre body JSON
       if (hasPlace) {
-        // 1) Obtener posición del usuario
         final pos = await _currentPosition();
         if (pos == null) {
           _snack('No se pudo obtener tu ubicación.');
           return;
         }
-
-        // 2) Calcular distancia al punto de la actividad
-        final distance = geo.Geolocator.distanceBetween(
-          pos.latitude,
-          pos.longitude,
-          a.placeLat!,
-          a.placeLon!,
-        );
-
-        // 3) Si está fuera del radio, preguntar si quiere forzar
-        if (distance > radius) {
-          final force = await _confirmProceedOutOfRadius(
-            distance: distance,
-            radius: radius,
-            placeName: a.placeName,
-          );
-          if (!force) return;
-        }
-
-        // 4) Enviar siempre lat/lon para verificación en backend
-        q = {
-          'verify_location': 'true',
-          'lat': pos.latitude.toString(),
-          'lon': pos.longitude.toString(),
+        // El backend valida el radio. Enviamos lat/lon y verify_location=true
+        body = {
+          'verify_location': true,
+          'lat': pos.latitude,
+          'lon': pos.longitude,
         };
       }
 
-      final res = await http.post(_apiUri(path, q), headers: _headers());
-      if (res.statusCode != 200) {
-        final msg =
-        _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
+      final uri = _apiUri('/activities/${a.id}/complete');
+      debugPrint('[POST] $uri body=$body');
+      final res = await http.post(
+        uri,
+        headers: _headers(jsonBody: true),
+        body: jsonEncode(body),
+      );
+
+      if (res.statusCode == 403) {
+        // Fuera de zona u otro motivo bloqueante
+        final msg = _extractMsg(res, fallback: 'Fuera de la zona permitida.');
         _snack(msg);
         return;
       }
-      _snack('Actividad completada 🎉 +${a.pointsOnComplete ?? 0} pts');
+
+      if (res.statusCode != 200) {
+        final msg = _extractMsg(res, fallback: 'No se pudo completar (${res.statusCode}).');
+        _snack(msg);
+        return;
+      }
+
+      // El backend devuelve ActivityOut actualizado
+      final updated =
+      Activity.fromJson(Map<String, dynamic>.from(jsonDecode(res.body)));
+
+      final awarded = a.pointsOnComplete ?? 0; // server no envía awarded_points
+      await _addPoints(awarded);
+      _snack('Actividad completada 🎉 +$awarded pts');
+
+      // --- Actualización optimista/servidor ---
+      setState(() {
+        _open.removeWhere((x) => x.id == a.id);
+        _today.removeWhere((x) => x.id == a.id);
+        _done.removeWhere((x) => x.id == a.id);
+        _done.insert(0, updated);
+      });
+      await _saveCache();
+
+      // Sincroniza con servidor (por si cambió algo más)
       await _refreshAll();
+
+      // (Opcional) confirma y sincroniza el total del usuario si existe endpoint
+      await _showMyTotalPoints();
     } catch (e) {
       _snack('Error de red: $e');
+    }
+  }
+
+  /// Intenta pedir tu total de puntos y mostrarlo en un snack.
+  /// Si responde, sincroniza el contador local.
+  Future<void> _showMyTotalPoints() async {
+    try {
+      final uri = _apiUri('/points/me');
+      final res = await http.get(uri, headers: _headers());
+      if (res.statusCode == 200 && res.body.isNotEmpty) {
+        final m = jsonDecode(res.body);
+        final total =
+        (m['total'] ?? m['points'] ?? m['current_points'] ?? m['balance']);
+        if (total != null) {
+          final t =
+          (total is num) ? total.toInt() : int.tryParse(total.toString());
+          if (t != null) {
+            await _setMyPoints(t);
+            _snack('Total: $t pts');
+          }
+        }
+      }
+    } catch (_) {
+      // silencioso
     }
   }
 
@@ -465,8 +541,9 @@ class _ActivitiesViewState extends State<ActivitiesView>
                         MaterialPageRoute(
                           builder: (_) => MapPickerPage(
                             initialCenter: initCenter,
-                            initialQuery:
-                            _placeCtrl.text.isNotEmpty ? _placeCtrl.text : null,
+                            initialQuery: _placeCtrl.text.isNotEmpty
+                                ? _placeCtrl.text
+                                : null,
                           ),
                         ),
                       );
@@ -562,12 +639,14 @@ class _ActivitiesViewState extends State<ActivitiesView>
               // Puntos + Crear
               Row(
                 children: [
-                  const Text('Puntos:', style: TextStyle(fontWeight: FontWeight.w700)),
+                  const Text('Puntos:',
+                      style: TextStyle(fontWeight: FontWeight.w700)),
                   const SizedBox(width: 12),
                   DropdownButton<int>(
                     value: _points,
                     items: const [1, 3, 5, 10, 15, 20]
-                        .map((e) => DropdownMenuItem(value: e, child: Text('$e')))
+                        .map((e) =>
+                        DropdownMenuItem(value: e, child: Text('$e')))
                         .toList(),
                     onChanged: (v) => setState(() => _points = v ?? 5),
                   ),
@@ -611,7 +690,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
       'title': title,
       'kind': 'visit',
       'points_on_complete': _points,
-      if (_dueDate != null) 'due_date': _dueDate!.toIso8601String().split('T').first,
+      if (_dueDate != null)
+        'due_date': _dueDate!.toIso8601String().split('T').first,
       if (place.isNotEmpty) 'place_name': place,
       if (lat != null) 'place_lat': lat,
       if (lon != null) 'place_lon': lon,
@@ -657,12 +737,26 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(msg)));
   }
 
   String _prettyDate(DateTime? d) {
     if (d == null) return '—';
-    const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+    const months = [
+      'ene',
+      'feb',
+      'mar',
+      'abr',
+      'may',
+      'jun',
+      'jul',
+      'ago',
+      'sep',
+      'oct',
+      'nov',
+      'dic'
+    ];
     return '${d.day.toString().padLeft(2, '0')} ${months[d.month - 1]} ${d.year}';
   }
 
@@ -700,16 +794,21 @@ class _ActivitiesViewState extends State<ActivitiesView>
                       ),
                       borderRadius: BorderRadius.circular(22),
                       boxShadow: const [
-                        BoxShadow(color: Color(0x22000000), blurRadius: 18, offset: Offset(0, 10))
+                        BoxShadow(
+                            color: Color(0x22000000),
+                            blurRadius: 18,
+                            offset: Offset(0, 10))
                       ],
                     ),
                     child: Row(
                       children: [
                         IconButton(
                           tooltip: 'Volver',
-                          style: IconButton.styleFrom(backgroundColor: Colors.white),
+                          style: IconButton.styleFrom(
+                              backgroundColor: Colors.white),
                           onPressed: () => Navigator.pop(context),
-                          icon: const Icon(Icons.arrow_back_rounded, color: Colors.black87),
+                          icon: const Icon(Icons.arrow_back_rounded,
+                              color: Colors.black87),
                         ),
                         const SizedBox(width: 8),
                         Container(
@@ -717,9 +816,11 @@ class _ActivitiesViewState extends State<ActivitiesView>
                           decoration: BoxDecoration(
                             color: Colors.white.withOpacity(.15),
                             borderRadius: BorderRadius.circular(14),
-                            border: Border.all(color: Colors.white.withOpacity(.22)),
+                            border: Border.all(
+                                color: Colors.white.withOpacity(.22)),
                           ),
-                          child: const Icon(Icons.flag_outlined, color: Colors.white, size: 28),
+                          child: const Icon(Icons.flag_outlined,
+                              color: Colors.white, size: 28),
                         ),
                         const SizedBox(width: 14),
                         const Expanded(
@@ -743,7 +844,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
                         const SizedBox(width: 8),
                         IconButton(
                           tooltip: 'Nueva actividad',
-                          style: IconButton.styleFrom(backgroundColor: Colors.white),
+                          style: IconButton.styleFrom(
+                              backgroundColor: Colors.white),
                           onPressed: _openCreateSheet,
                           icon: const Icon(Icons.add, color: Colors.black87),
                         ),
@@ -753,14 +855,17 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
                   const SizedBox(height: 12),
 
-                  // Tabs minimalistas
+                  // Tabs: Hoy / Todas / Completadas
                   Container(
                     decoration: BoxDecoration(
                       color: Colors.white,
                       borderRadius: BorderRadius.circular(18),
                       border: Border.all(color: const Color(0xFFF0ECE4)),
                       boxShadow: const [
-                        BoxShadow(color: Color(0x14000000), blurRadius: 12, offset: Offset(0, 6))
+                        BoxShadow(
+                            color: Color(0x14000000),
+                            blurRadius: 12,
+                            offset: Offset(0, 6))
                       ],
                     ),
                     child: Column(
@@ -771,8 +876,14 @@ class _ActivitiesViewState extends State<ActivitiesView>
                           unselectedLabelColor: Colors.black87,
                           indicatorColor: _primary,
                           tabs: const [
-                            Tab(icon: Icon(Icons.today_outlined), text: 'Hoy'),
-                            Tab(icon: Icon(Icons.list_alt_outlined), text: 'Todas'),
+                            Tab(
+                                icon: Icon(Icons.today_outlined), text: 'Hoy'),
+                            Tab(
+                                icon: Icon(Icons.list_alt_outlined),
+                                text: 'Todas'),
+                            Tab(
+                                icon: Icon(Icons.check_circle_outlined),
+                                text: 'Completadas'),
                           ],
                         ),
                         SizedBox(
@@ -780,8 +891,15 @@ class _ActivitiesViewState extends State<ActivitiesView>
                           child: TabBarView(
                             controller: _tabs,
                             children: [
-                              _buildList(_today, _loadingToday, emptyText: 'Sin objetivos para hoy.'),
-                              _buildList(_open, _loadingOpen, emptyText: 'No hay actividades pendientes.'),
+                              _buildList(_today, _loadingToday,
+                                  emptyText: 'Sin objetivos para hoy.'),
+                              _buildList(_open, _loadingOpen,
+                                  emptyText:
+                                  'No hay actividades pendientes.'),
+                              _buildList(_done, _loadingDone,
+                                  emptyText:
+                                  'Aún no has completado actividades.',
+                                  completedList: true),
                             ],
                           ),
                         ),
@@ -798,7 +916,12 @@ class _ActivitiesViewState extends State<ActivitiesView>
   }
 
   // ==== FIX overflow: item con Row + Expanded y límites de ancho ====
-  Widget _buildList(List<Activity> data, bool loading, {required String emptyText}) {
+  Widget _buildList(
+      List<Activity> data,
+      bool loading, {
+        required String emptyText,
+        bool completedList = false,
+      }) {
     if (loading) {
       return const Center(
         child: Padding(
@@ -809,7 +932,8 @@ class _ActivitiesViewState extends State<ActivitiesView>
     }
     if (data.isEmpty) {
       return Center(
-        child: Text(emptyText, style: TextStyle(color: Colors.black.withOpacity(.6))),
+        child: Text(emptyText,
+            style: TextStyle(color: Colors.black.withOpacity(.6))),
       );
     }
     return ListView.separated(
@@ -825,7 +949,12 @@ class _ActivitiesViewState extends State<ActivitiesView>
             color: Colors.white,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: const Color(0xFFF0ECE4)),
-            boxShadow: const [BoxShadow(color: Color(0x11000000), blurRadius: 10, offset: Offset(0, 5))],
+            boxShadow: const [
+              BoxShadow(
+                  color: Color(0x11000000),
+                  blurRadius: 10,
+                  offset: Offset(0, 5))
+            ],
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
@@ -842,11 +971,12 @@ class _ActivitiesViewState extends State<ActivitiesView>
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w800)),
-                    if (a.placeName != null && a.placeName!.trim().isNotEmpty)
+                    if ((a.placeName ?? '').trim().isNotEmpty)
                       Text(a.placeName!,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.black.withOpacity(.65))),
+                          style: TextStyle(
+                              color: Colors.black.withOpacity(.65))),
                     const SizedBox(height: 2),
                     Row(
                       children: [
@@ -857,14 +987,16 @@ class _ActivitiesViewState extends State<ActivitiesView>
                             _prettyDate(a.dueDate),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: Colors.black.withOpacity(.65)),
+                            style: TextStyle(
+                                color: Colors.black.withOpacity(.65)),
                           ),
                         ),
                         const SizedBox(width: 8),
                         const Icon(Icons.stars_outlined, size: 16),
                         const SizedBox(width: 4),
                         Text('${a.pointsOnComplete ?? 0} pts',
-                            style: TextStyle(color: Colors.black.withOpacity(.65))),
+                            style: TextStyle(
+                                color: Colors.black.withOpacity(.65))),
                       ],
                     ),
                   ],
@@ -873,25 +1005,35 @@ class _ActivitiesViewState extends State<ActivitiesView>
 
               const SizedBox(width: 8),
 
-              if (hasPlace)
+              if (!completedList && hasPlace)
                 IconButton(
                   tooltip: 'Check-in',
-                  constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                  constraints:
+                  const BoxConstraints(minWidth: 40, minHeight: 40),
                   onPressed: () => _checkin(a),
                   icon: const Icon(Icons.my_location_outlined),
                 ),
 
               // Botón limitado para evitar desbordes
               ConstrainedBox(
-                constraints: const BoxConstraints(minHeight: 40, minWidth: 92, maxWidth: 120),
-                child: FilledButton(
+                constraints: const BoxConstraints(
+                    minHeight: 40, minWidth: 92, maxWidth: 140),
+                child: completedList
+                    ? OutlinedButton.icon(
+                  onPressed: null,
+                  icon: const Icon(Icons.check_circle, size: 18),
+                  label: const Text('Hecha'),
+                )
+                    : FilledButton(
                   style: FilledButton.styleFrom(
                     backgroundColor: _primary,
                     foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    padding:
+                    const EdgeInsets.symmetric(horizontal: 12),
                   ),
                   onPressed: () => _complete(a),
-                  child: const Text('Completar', overflow: TextOverflow.ellipsis),
+                  child: const Text('Completar',
+                      overflow: TextOverflow.ellipsis),
                 ),
               ),
             ],
@@ -915,8 +1057,7 @@ class _BgPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
-    final paint = Paint
-      ()
+    final paint = Paint()
       ..shader = const LinearGradient(
         colors: [Color(0xFFFDFBF6), Color(0xFFFBF7EF)],
         begin: Alignment.topCenter,
